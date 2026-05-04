@@ -1,0 +1,7 @@
+Flask==2.3.2
+
+reportlab==4.0.7
+
+python-docx==0.8.11
+
+gunicorn==21.2.0
