@@ -1,9 +1,12 @@
 import os
+import base64
+import tempfile
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.colors import HexColor, white, black
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Paragraph
 from reportlab.lib.styles import ParagraphStyle
@@ -16,6 +19,36 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
+
+
+def decode_photo(photo_data):
+    """Decode base64 photo data and return an ImageReader or None."""
+    if not photo_data:
+        return None
+    try:
+        if ',' in photo_data:
+            photo_data = photo_data.split(',')[1]
+        img_bytes = base64.b64decode(photo_data)
+        img_buf = BytesIO(img_bytes)
+        return ImageReader(img_buf)
+    except Exception:
+        return None
+
+
+def draw_circular_photo(c, img_reader, cx, cy, radius):
+    """Draw a circular clipped photo on the canvas."""
+    if img_reader is None:
+        return
+    c.saveState()
+    path = c.beginPath()
+    path.circle(cx, cy, radius)
+    path.close()
+    c.clipPath(path, stroke=0)
+    c.drawImage(img_reader,
+                cx - radius, cy - radius,
+                radius * 2, radius * 2,
+                preserveAspectRatio=True, mask='auto')
+    c.restoreState()
 
 
 @app.route('/', methods=['GET'])
@@ -58,12 +91,18 @@ def generate_executive_pdf(cv, colours):
     draw_sidebar(c)
 
     cx, cy = SIDEBAR_W / 2, H - 70
-    c.setFillColor(NAVY_LIGHT)
-    c.circle(cx, cy, 36, fill=1, stroke=0)
-    c.setFillColor(white)
-    c.setFont('Helvetica-Bold', 18)
-    initials = ''.join([w[0] for w in cv.get('name', 'CV').split()[:2]]).upper()
-    c.drawCentredString(cx, cy - 6, initials)
+    photo_img = decode_photo(cv.get('photo'))
+    if photo_img:
+        c.setFillColor(white)
+        c.circle(cx, cy, 38, fill=1, stroke=0)
+        draw_circular_photo(c, photo_img, cx, cy, 36)
+    else:
+        c.setFillColor(NAVY_LIGHT)
+        c.circle(cx, cy, 36, fill=1, stroke=0)
+        c.setFillColor(white)
+        c.setFont('Helvetica-Bold', 18)
+        initials = ''.join([w[0] for w in cv.get('name', 'CV').split()[:2]]).upper()
+        c.drawCentredString(cx, cy - 6, initials)
 
     sx = 18
     y = H - 130
@@ -112,16 +151,20 @@ def generate_executive_pdf(cv, colours):
     y -= 20
 
     for edu in cv.get('education', []):
-        c.setFont('Helvetica-Bold', 7.5)
-        c.setFillColor(white)
-        c.drawString(sx, y, str(edu.get('degree', '')))
-        y -= 12
-        c.setFont('Helvetica', 7)
-        c.setFillColor(HexColor('#A0A0A0'))
+        edu_style = ParagraphStyle('edu_title', fontName='Helvetica-Bold', fontSize=7.5,
+                                    leading=9.5, textColor=white)
+        p = Paragraph(str(edu.get('degree', '')), edu_style)
+        pw, ph = p.wrap(SIDEBAR_W - 36, 50)
+        p.drawOn(c, sx, y - ph)
+        y -= ph + 2
+        edu_sub = ParagraphStyle('edu_sub', fontName='Helvetica', fontSize=6.5,
+                                  leading=8.5, textColor=HexColor('#A0A0A0'))
         inst = edu.get('institution', '')
         yr = edu.get('year', '')
-        c.drawString(sx, y, '{} - {}'.format(inst, yr))
-        y -= 18
+        p2 = Paragraph('{} - {}'.format(inst, yr), edu_sub)
+        pw2, ph2 = p2.wrap(SIDEBAR_W - 36, 50)
+        p2.drawOn(c, sx, y - ph2)
+        y -= ph2 + 10
 
     mx = SIDEBAR_W + 24
     mw = W - mx - 24
@@ -193,9 +236,10 @@ def generate_executive_pdf(cv, colours):
             y -= ph + 3
         y -= 8
 
-    c.setFont('Helvetica', 6)
-    c.setFillColor(TEXT_LIGHT)
-    c.drawCentredString(W / 2 + SIDEBAR_W / 2, 15, 'Created with RoleAlign')
+    if not cv.get('is_premium', False):
+        c.setFont('Helvetica', 6)
+        c.setFillColor(TEXT_LIGHT)
+        c.drawCentredString(W / 2 + SIDEBAR_W / 2, 15, 'Created with RoleAlign')
 
     c.save()
     buf.seek(0)
@@ -312,12 +356,18 @@ def generate_creative_pdf(cv, colours):
 
     photo_cx = panel_x + RIGHT_W / 2
     photo_cy = ry + 5
-    c.setFillColor(HexColor('#DDD8FF'))
-    c.circle(photo_cx, photo_cy, 32, fill=1, stroke=0)
-    c.setFillColor(PURPLE_1)
-    c.setFont('Helvetica-Bold', 16)
-    initials = ''.join([w[0] for w in cv.get('name', 'CV').split()[:2]]).upper()
-    c.drawCentredString(photo_cx, photo_cy - 5, initials)
+    photo_img = decode_photo(cv.get('photo'))
+    if photo_img:
+        c.setFillColor(white)
+        c.circle(photo_cx, photo_cy, 34, fill=1, stroke=0)
+        draw_circular_photo(c, photo_img, photo_cx, photo_cy, 32)
+    else:
+        c.setFillColor(HexColor('#DDD8FF'))
+        c.circle(photo_cx, photo_cy, 32, fill=1, stroke=0)
+        c.setFillColor(PURPLE_1)
+        c.setFont('Helvetica-Bold', 16)
+        initials = ''.join([w[0] for w in cv.get('name', 'CV').split()[:2]]).upper()
+        c.drawCentredString(photo_cx, photo_cy - 5, initials)
     ry -= 50
 
     c.setFont('Helvetica-Bold', 9)
@@ -361,9 +411,10 @@ def generate_creative_pdf(cv, colours):
         c.drawString(rx, ry, '{} - {}'.format(edu.get('institution', ''), edu.get('year', '')))
         ry -= 18
 
-    c.setFont('Helvetica', 6)
-    c.setFillColor(TEXT_LIGHT)
-    c.drawCentredString(W / 2, 12, 'Created with RoleAlign')
+    if not cv.get('is_premium', False):
+        c.setFont('Helvetica', 6)
+        c.setFillColor(TEXT_LIGHT)
+        c.drawCentredString(W / 2, 12, 'Created with RoleAlign')
 
     c.save()
     buf.seek(0)
@@ -399,14 +450,20 @@ def generate_impact_pdf(cv, colours):
 
     photo_cx = W - 65
     photo_cy = H - header_h / 2
-    c.setFillColor(white)
-    c.circle(photo_cx, photo_cy, 34, fill=1, stroke=0)
-    c.setFillColor(HexColor('#374151'))
-    c.circle(photo_cx, photo_cy, 31, fill=1, stroke=0)
-    c.setFont('Helvetica-Bold', 16)
-    c.setFillColor(white)
-    initials = ''.join([w[0] for w in cv.get('name', 'CV').split()[:2]]).upper()
-    c.drawCentredString(photo_cx, photo_cy - 5, initials)
+    photo_img = decode_photo(cv.get('photo'))
+    if photo_img:
+        c.setFillColor(white)
+        c.circle(photo_cx, photo_cy, 34, fill=1, stroke=0)
+        draw_circular_photo(c, photo_img, photo_cx, photo_cy, 31)
+    else:
+        c.setFillColor(white)
+        c.circle(photo_cx, photo_cy, 34, fill=1, stroke=0)
+        c.setFillColor(HexColor('#374151'))
+        c.circle(photo_cx, photo_cy, 31, fill=1, stroke=0)
+        c.setFont('Helvetica-Bold', 16)
+        c.setFillColor(white)
+        initials = ''.join([w[0] for w in cv.get('name', 'CV').split()[:2]]).upper()
+        c.drawCentredString(photo_cx, photo_cy - 5, initials)
 
     right_x = W - RIGHT_W - 4
     left_x = 28
@@ -536,9 +593,10 @@ def generate_impact_pdf(cv, colours):
         c.drawString(rx, ry, '{} - {}'.format(edu.get('institution', ''), edu.get('year', '')))
         ry -= 18
 
-    c.setFont('Helvetica', 6)
-    c.setFillColor(TEXT_LIGHT)
-    c.drawCentredString(W / 2, 12, 'Created with RoleAlign')
+    if not cv.get('is_premium', False):
+        c.setFont('Helvetica', 6)
+        c.setFillColor(TEXT_LIGHT)
+        c.drawCentredString(W / 2, 12, 'Created with RoleAlign')
 
     c.save()
     buf.seek(0)
