@@ -271,12 +271,12 @@ def generate_creative_pdf(cv, colours):
     buf = BytesIO()
     c   = canvas.Canvas(buf, pagesize=A4)
 
-    # Gradient header
+ # Gradient header (reads dynamic colours instead of hardcoded purple)
     band_h = 90
     steps  = 50
+    r1, g1, b1 = PURPLE_1.red, PURPLE_1.green, PURPLE_1.blue
+    r2, g2, b2 = PURPLE_2.red, PURPLE_2.green, PURPLE_2.blue
     for i in range(steps):
-        r1, g1, b1 = 0.388, 0.400, 0.945
-        r2, g2, b2 = 0.545, 0.361, 0.965
         t = i / float(steps)
         r = r1 + (r2 - r1) * t
         g = g1 + (g2 - g1) * t
