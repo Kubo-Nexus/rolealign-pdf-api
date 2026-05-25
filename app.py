@@ -897,7 +897,7 @@ def generate_impact_pdf(cv, colours):
         )
 
         if photo_img:
-            draw_circular_photo(c, W - 65, H - header_h / 2, 31)
+            draw_circular_photo(c, photo_img, W - 65, H - header_h / 2, 31)
 
         c.setFillColor(HexColor("#F9FAFB"))
         c.rect(right_x - 10, 0, RIGHT_W + 14, body_top + 22, fill=1, stroke=0)
