@@ -20,7 +20,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.2.0"
+API_VERSION = "1.2.1"
 
 ACRONYMS = {
     "sap": "SAP", "sd": "SD", "mm": "MM", "wh": "WH", "fi": "FI",
@@ -239,26 +239,51 @@ def draw_wrapped(c, text, x, y, width, font="Helvetica", size=8, leading=11, col
 
 
 def draw_role(c, job, x, y, width, accent, text_dark="#1A1A1A", text_med="#4A4A4A", text_light="#777777", bullet=True):
+    """
+    Draw one experience entry with a protected right-side date column.
+
+    Critical layout rules:
+    - The job title is wrapped before it reaches the date column.
+    - Dates stay in a reserved right-side column.
+    - Company always renders on its own line below the fully wrapped title.
+    - Extra spacing is added between jobs to prevent visual crowding.
+    """
     title = clean_text(job.get("title"))
     company = clean_text(job.get("company"))
     dates = clean_text(job.get("dates"))
 
-    title_w = width - 90
-    title_y = draw_wrapped(c, title, x, y, title_w, size=8.8, leading=10.5, colour=text_dark, bold=True)
+    date_col_w = 118
+    title_w = max(120, width - date_col_w - 10)
 
+    # Title is a Paragraph, not drawString, so long titles wrap before dates.
+    title_y = draw_wrapped(
+        c, title, x, y, title_w,
+        size=8.8, leading=10.8, colour=text_dark, bold=True
+    )
+
+    # Date is pinned to the right column on the first title line only.
     if dates:
         c.setFont("Helvetica", 7.5)
         c.setFillColor(HexColor(text_light))
         tw = c.stringWidth(dates, "Helvetica", 7.5)
         c.drawString(x + width - tw, y, dates)
 
-    y = min(title_y, y - 12)
+    # IMPORTANT: company starts below the wrapped title, not on the same baseline.
+    y = title_y - 5
 
     if company:
-        c.setFont("Helvetica", 8)
-        c.setFillColor(accent)
-        c.drawString(x, y, company)
-        y -= 13
+        company_style = ParagraphStyle(
+            "company",
+            fontName="Helvetica",
+            fontSize=8,
+            leading=10,
+            textColor=accent,
+            alignment=TA_LEFT
+        )
+        cp = Paragraph(company, company_style)
+        _, ch = cp.wrap(width, 40)
+        cp.drawOn(c, x, y - ch)
+        y -= ch + 7
 
     bstyle = ParagraphStyle(
         "bullet",
@@ -275,9 +300,9 @@ def draw_role(c, job, x, y, width, accent, text_dark="#1A1A1A", text_med="#4A4A4
         p = Paragraph(txt, bstyle)
         _, h = p.wrap(width - 5, 300)
         p.drawOn(c, x, y - h)
-        y -= h + 3
+        y -= h + 4
 
-    return y - 8
+    return y - 14
 
 
 def draw_skills_list(c, skills, x, y, width, colour="#4A4A4A", size=7.5):
@@ -352,6 +377,14 @@ def home():
             "POST /generate-pdf": "Generate a styled CV PDF",
             "POST /generate-docx": "Generate an editable CV DOCX"
         }
+    })
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "ok": True,
+        "service": "rolealign-pdf-api",
+        "version": API_VERSION
     })
 
 
@@ -448,7 +481,7 @@ def generate_executive_pdf(cv, colours):
 
     section_heading(c, sx, y, "SKILLS", ACCENT, SIDEBAR_W - 36)
     y -= 20
-    y = draw_skills_list(c, cv.get("skills", [])[:12], sx, y, SIDEBAR_W - 36, "#D0D0D0", 7.2)
+    y = draw_skills_list(c, cv.get("skills", []), sx, y, SIDEBAR_W - 36, "#D0D0D0", 6.3)
     y -= 10
 
     section_heading(c, sx, y, "EDUCATION", ACCENT, SIDEBAR_W - 36)
