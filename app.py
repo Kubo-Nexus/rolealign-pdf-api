@@ -20,7 +20,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.2.8"
+API_VERSION = "1.2.9"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -679,7 +679,13 @@ def generate_executive_pdf(cv, colours):
     c = canvas.Canvas(buf, pagesize=A4)
     photo_img = decode_photo(cv.get("photo"))
 
-    def sidebar(include_photo=True):
+    def executive_page1_sidebar():
+        """Render the Executive sidebar on page 1 only.
+
+        Page 2+ must not repeat CONTACT / SKILLS / EDUCATION. Those sections
+        are useful on the first page, but repeating them on every page makes the
+        paid Executive CV look like a broken layout and wastes continuation space.
+        """
         c.setFillColor(NAVY)
         c.rect(0, 0, SIDEBAR_W, H, fill=1, stroke=0)
         footer_brand(c, cv.get("is_premium", True))
@@ -687,20 +693,19 @@ def generate_executive_pdf(cv, colours):
         sx = 18
         cx, cy = SIDEBAR_W / 2, H - 70
 
-        if include_photo:
-            if photo_img:
-                c.setFillColor(white)
-                c.circle(cx, cy, 38, fill=1, stroke=0)
-                draw_circular_photo(c, photo_img, cx, cy, 36)
-            else:
-                c.setFillColor(HexColor("#2A3F6A"))
-                c.circle(cx, cy, 36, fill=1, stroke=0)
-                c.setFillColor(white)
-                c.setFont("Helvetica-Bold", 18)
-                initials = "".join([w[0] for w in (cv.get("name") or "CV").split()[:2]]).upper()
-                c.drawCentredString(cx, cy - 6, initials)
+        if photo_img:
+            c.setFillColor(white)
+            c.circle(cx, cy, 38, fill=1, stroke=0)
+            draw_circular_photo(c, photo_img, cx, cy, 36)
+        else:
+            c.setFillColor(HexColor("#2A3F6A"))
+            c.circle(cx, cy, 36, fill=1, stroke=0)
+            c.setFillColor(white)
+            c.setFont("Helvetica-Bold", 18)
+            initials = "".join([w[0] for w in (cv.get("name") or "CV").split()[:2]]).upper()
+            c.drawCentredString(cx, cy - 6, initials)
 
-        y = H - 130 if include_photo else H - 45
+        y = H - 130
 
         section_heading(c, sx, y, "CONTACT", ACCENT, SIDEBAR_W - 36)
         y -= 20
@@ -726,11 +731,26 @@ def generate_executive_pdf(cv, colours):
             y -= 20
             draw_education(c, cv.get("education", []), sx, y, SIDEBAR_W - 36, "#FFFFFF", "#A0A0A0")
 
-    sidebar(include_photo=True)
+    def executive_continuation_header(page_no):
+        """Minimal page 2+ header only. No repeated sidebar sections."""
+        footer_brand(c, cv.get("is_premium", True))
+        c.setFont("Helvetica-Bold", 9)
+        c.setFillColor(NAVY)
+        c.drawString(32, H - 24, cv.get("name") or "Professional CV")
+        c.setFont("Helvetica", 7)
+        c.setFillColor(HexColor(TEXT_LIGHT))
+        c.drawRightString(W - 32, H - 24, f"Page {page_no}")
+        c.setStrokeColor(ACCENT)
+        c.setLineWidth(0.5)
+        c.line(32, H - 32, W - 32, H - 32)
 
+    executive_page1_sidebar()
+
+    # Page 1 uses the sidebar layout. Continuation pages switch to full-width.
     mx = SIDEBAR_W + 24
     mw = W - mx - 24
     y = H - 45
+    page_no = 1
 
     c.setFont("Helvetica-Bold", 24)
     c.setFillColor(NAVY)
@@ -743,11 +763,15 @@ def generate_executive_pdf(cv, colours):
 
     section_heading(c, mx, y, "EXPERIENCE", NAVY, mw)
     y -= 18
+
     for job in cv.get("experience", []):
         if y < 90:
             c.showPage()
-            sidebar(include_photo=False)
-            y = H - 45
+            page_no += 1
+            executive_continuation_header(page_no)
+            mx = 32
+            mw = W - 64
+            y = H - 48
         y = draw_role(c, job, mx, y, mw, ACCENT, TEXT_DARK, TEXT_MED, TEXT_LIGHT, company_gap=9)
 
     # Executive should be the most complete CV output. Render any optional
@@ -761,15 +785,21 @@ def generate_executive_pdf(cv, colours):
         if items:
             if y < 105:
                 c.showPage()
-                sidebar(include_photo=False)
-                y = H - 45
+                page_no += 1
+                executive_continuation_header(page_no)
+                mx = 32
+                mw = W - 64
+                y = H - 48
             y = draw_list_section(c, label, items, mx, y, mw, NAVY, TEXT_MED, bullet=use_bullets)
 
     if cv.get("references"):
         if y < 70:
             c.showPage()
-            sidebar(include_photo=False)
-            y = H - 45
+            page_no += 1
+            executive_continuation_header(page_no)
+            mx = 32
+            mw = W - 64
+            y = H - 48
         section_heading(c, mx, y, "REFERENCES", NAVY, 75)
         y -= 16
         draw_wrapped(c, cv.get("references"), mx, y, mw, size=8, leading=11, colour=TEXT_MED)
@@ -777,7 +807,6 @@ def generate_executive_pdf(cv, colours):
     c.save()
     buf.seek(0)
     return buf
-
 
 def generate_creative_pdf(cv, colours):
     cv = normalise_cv(cv)
