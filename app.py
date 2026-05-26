@@ -24,7 +24,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.2.4"
+API_VERSION = "1.2.5"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -66,6 +66,7 @@ def clean_text(value):
     text = re.sub(r"\s+-\s*$", "", text)
     text = re.sub(r"\s+\(\s*\)\s*$", "", text)
 
+    # Preserve the SAP skill exactly. This prevents comma splitting/normalisation damage.
     text = re.sub(
         r"\bSAP\s+Super\s+User\s*\(\s*SD\s*,?\s*MM\s*,?\s*WH\s*&\s*FI\s*\)",
         SAP_SUPER_USER,
@@ -75,6 +76,7 @@ def clean_text(value):
     text = text.replace("Sd Mm Wh & Fi", "SD, MM, WH & FI")
     text = text.replace("SD MM WH & FI", "SD, MM, WH & FI")
 
+    # Do not let the acronym pass damage already-correct SAP Super User text.
     protected = text.replace(SAP_SUPER_USER, SAP_MARKER)
     for wrong, right in ACRONYMS.items():
         protected = re.sub(rf"\b{wrong}\b", right, protected, flags=re.IGNORECASE)
@@ -96,9 +98,9 @@ def split_skills(skills):
             skills,
             flags=re.IGNORECASE,
         )
+        # Split common skill separators, but avoid breaking the SAP parenthetical commas.
         raw_parts = re.split(r"\n|•|·|;|,(?!\s*(?:MM|WH|FI)\b)", protected)
         return [p.replace(SAP_MARKER, SAP_SUPER_USER) for p in raw_parts]
-
     return skills or []
 
 
@@ -120,21 +122,17 @@ def normalise_cv(cv):
 
     skills = split_skills(cv.get("skills") or [])
     clean_skills = []
-
     for skill in skills:
         if isinstance(skill, dict):
             skill = skill.get("name") or skill.get("skill") or skill.get("label")
-
         s = clean_text(skill)
         if s and s not in clean_skills:
             clean_skills.append(s)
-
     clean_cv["skills"] = clean_skills
     clean_cv["skills_csv"] = ", ".join(clean_skills)
     clean_cv["skills_bullet"] = " · ".join(clean_skills)
 
     experience = []
-
     for job in cv.get("experience", []) or []:
         if isinstance(job, str):
             title = clean_text(job)
@@ -143,17 +141,11 @@ def normalise_cv(cv):
             bullets = []
         else:
             title = clean_text(job.get("title") or job.get("role") or job.get("position"))
-            company = clean_text(
-                job.get("company")
-                or job.get("employer")
-                or job.get("organisation")
-                or job.get("organization")
-            )
+            company = clean_text(job.get("company") or job.get("employer") or job.get("organisation") or job.get("organization"))
             dates = clean_text(job.get("dates") or job.get("date") or job.get("period"))
             bullets = [clean_text(b) for b in job.get("bullets", []) if clean_text(b)]
 
         header = clean_text(job.get("header")) if isinstance(job, dict) else ""
-
         if not header:
             left = clean_join([title, company], " — ")
             header = clean_join([left, dates], " · ")
@@ -168,11 +160,9 @@ def normalise_cv(cv):
                     "bullets": bullets,
                 }
             )
-
     clean_cv["experience"] = experience
 
     education = []
-
     for edu in cv.get("education", []) or []:
         if isinstance(edu, str):
             degree = clean_text(edu)
@@ -184,39 +174,20 @@ def normalise_cv(cv):
             year = clean_text(edu.get("year") or edu.get("dates") or edu.get("date"))
 
         line = clean_join([degree, institution], " - ")
-
         if year:
             line = f"{line} ({year})" if line else year
 
         if line and line not in ["Professional Certifications", "Professional Certification"]:
-            education.append(
-                {
-                    "degree": degree,
-                    "institution": institution,
-                    "year": year,
-                    "line": line,
-                }
-            )
+            education.append({"degree": degree, "institution": institution, "year": year, "line": line})
         elif degree and "professional certification" not in degree.lower():
-            education.append(
-                {
-                    "degree": degree,
-                    "institution": institution,
-                    "year": year,
-                    "line": degree,
-                }
-            )
-
+            education.append({"degree": degree, "institution": institution, "year": year, "line": degree})
     clean_cv["education"] = education
 
     certifications = []
-
     for cert in cv.get("certifications", []) or []:
         cert_text = clean_text(cert.get("name") if isinstance(cert, dict) else cert)
-
         if cert_text and cert_text not in ["Professional Certifications", "Professional Certification"]:
             certifications.append(cert_text)
-
     clean_cv["certifications"] = certifications
 
     return clean_cv
@@ -225,25 +196,17 @@ def normalise_cv(cv):
 def decode_photo(photo_data):
     if not photo_data:
         return None
-
     try:
         if isinstance(photo_data, str) and photo_data.startswith("http"):
-            req = urllib.request.Request(
-                photo_data,
-                headers={"User-Agent": f"RoleAlignPDF/{API_VERSION}"},
-            )
-
+            req = urllib.request.Request(photo_data, headers={"User-Agent": f"RoleAlignPDF/{API_VERSION}"})
             with urllib.request.urlopen(req, timeout=8) as response:
                 return ImageReader(BytesIO(response.read()))
 
         data = str(photo_data)
-
         if "," in data:
             data = data.split(",", 1)[1]
-
         img_bytes = base64.b64decode(data)
         return ImageReader(BytesIO(img_bytes))
-
     except Exception as e:
         print(f"[photo_error] {e}")
         return None
@@ -252,7 +215,6 @@ def decode_photo(photo_data):
 def draw_circular_photo(c, img_reader, cx, cy, radius):
     if img_reader is None:
         return
-
     c.saveState()
     path = c.beginPath()
     path.circle(cx, cy, radius)
@@ -272,13 +234,11 @@ def draw_circular_photo(c, img_reader, cx, cy, radius):
 
 def draw_rolealign_watermark(c):
     c.saveState()
-
     try:
         c.setFillColor(HexColor("#D9D9D9"))
         c.setFillAlpha(0.18)
     except Exception:
         c.setFillColor(HexColor("#E6E6E6"))
-
     c.setFont("Helvetica-Bold", 58)
     c.translate(W / 2, H / 2)
     c.rotate(35)
@@ -291,7 +251,6 @@ def draw_rolealign_watermark(c):
 def footer_brand(c, is_premium):
     if not is_premium:
         draw_rolealign_watermark(c)
-
     c.setFont("Helvetica", 6)
     c.setFillColor(HexColor("#999999"))
     c.drawCentredString(W / 2, 12, "Created with RoleAlign")
@@ -319,10 +278,8 @@ def draw_wrapped(
     bold=False,
 ):
     text = clean_text(text)
-
     if not text:
         return y
-
     style = ParagraphStyle(
         "wrap",
         fontName="Helvetica-Bold" if bold else font,
@@ -332,11 +289,9 @@ def draw_wrapped(
         alignment=TA_LEFT,
         wordWrap="CJK",
     )
-
     p = Paragraph(text, style)
     _, h = p.wrap(width, 500)
     p.drawOn(c, x, y - h)
-
     return y - h
 
 
@@ -353,6 +308,13 @@ def draw_role(
     bullet=True,
     company_gap=6,
 ):
+    """
+    Stable role header renderer.
+
+    The company baseline is calculated from the actual wrapped title paragraph height,
+    not a fixed one-line offset. This prevents wrapped titles from colliding
+    with company names.
+    """
     title = clean_text(job.get("title"))
     company = clean_text(job.get("company"))
     dates = clean_text(job.get("dates"))
@@ -380,6 +342,7 @@ def draw_role(
         tw = c.stringWidth(dates, "Helvetica", 7.5)
         c.drawString(x + width - tw, title_top_y - 8.5, dates)
 
+    # Company must sit below the full wrapped title block, never inline with title line 2.
     y = min(title_bottom_y - company_gap, title_top_y - 16)
 
     if company:
@@ -403,10 +366,8 @@ def draw_role(
 
     for item in job.get("bullets", []) or []:
         txt = f"• {clean_text(item)}" if bullet else clean_text(item)
-
         if not txt:
             continue
-
         p = Paragraph(txt, bstyle)
         _, h = p.wrap(width - 5, 500)
         p.drawOn(c, x, y - h)
@@ -417,13 +378,10 @@ def draw_role(
 
 def draw_skills_list(c, skills, x, y, width, colour="#4A4A4A", size=7.5):
     c.setFillColor(HexColor(colour))
-
     for skill in skills:
         text = clean_text(skill)
-
         if not text:
             continue
-
         p = Paragraph(
             text,
             ParagraphStyle(
@@ -438,7 +396,6 @@ def draw_skills_list(c, skills, x, y, width, colour="#4A4A4A", size=7.5):
         _, h = p.wrap(width, 60)
         p.drawOn(c, x, y - h)
         y -= h + 5
-
     return y
 
 
@@ -448,17 +405,14 @@ def draw_skill_pills(c, skills, x, y, width, bg, fg, font_size=7):
 
     for skill in skills:
         skill = clean_text(skill)
-
         if not skill:
             continue
 
         tw = c.stringWidth(skill, "Helvetica", font_size) + 14
-
         if tw > width:
             if tag_x != x:
                 tag_x = x
                 y -= row_gap
-
             p = Paragraph(
                 skill,
                 ParagraphStyle(
@@ -495,23 +449,10 @@ def draw_skill_pills(c, skills, x, y, width, bg, fg, font_size=7):
 def draw_education(c, education, x, y, width, title_colour="#1A1A1A", sub_colour="#777777"):
     for edu in education:
         line = clean_text(edu.get("line"))
-
         if not line:
             continue
-
-        y = draw_wrapped(
-            c,
-            line,
-            x,
-            y,
-            width,
-            size=7.2,
-            leading=9,
-            colour=title_colour,
-            bold=False,
-        )
+        y = draw_wrapped(c, line, x, y, width, size=7.2, leading=9, colour=title_colour, bold=False)
         y -= 7
-
     return y
 
 
@@ -533,13 +474,7 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify(
-        {
-            "ok": True,
-            "service": "rolealign-pdf-api",
-            "version": API_VERSION,
-        }
-    )
+    return jsonify({"ok": True, "service": "rolealign-pdf-api", "version": API_VERSION})
 
 
 def generate_starter_pdf(cv, colours):
@@ -561,35 +496,20 @@ def generate_starter_pdf(cv, colours):
 
     c.setFont("Helvetica", 8)
     c.setFillColor(HexColor("#4B5563"))
-    c.drawString(
-        x,
-        y,
-        clean_join([cv.get("email"), cv.get("phone"), cv.get("location")], " | "),
-    )
+    c.drawString(x, y, clean_join([cv.get("email"), cv.get("phone"), cv.get("location")], " | "))
     y -= 28
 
     section_heading(c, x, y, "SUMMARY", accent, 65)
     y -= 16
-    y = draw_wrapped(
-        c,
-        cv.get("summary"),
-        x,
-        y,
-        width,
-        size=8.5,
-        leading=12,
-        colour="#374151",
-    ) - 14
+    y = draw_wrapped(c, cv.get("summary"), x, y, width, size=8.5, leading=12, colour="#374151") - 14
 
     section_heading(c, x, y, "EXPERIENCE", accent, 80)
     y -= 18
-
     for job in cv.get("experience", []):
         if y < 90:
             c.showPage()
             footer_brand(c, cv.get("is_premium", False))
             y = H - 45
-
         y = draw_role(c, job, x, y, width, accent, bullet=False, company_gap=6)
 
     if y < 110:
@@ -599,16 +519,7 @@ def generate_starter_pdf(cv, colours):
 
     section_heading(c, x, y, "SKILLS", accent, 45)
     y -= 16
-    y = draw_wrapped(
-        c,
-        cv.get("skills_csv"),
-        x,
-        y,
-        width,
-        size=8,
-        leading=11,
-        colour="#374151",
-    ) - 14
+    y = draw_wrapped(c, cv.get("skills_csv"), x, y, width, size=8, leading=11, colour="#374151") - 14
 
     section_heading(c, x, y, "EDUCATION", accent, 70)
     y -= 16
@@ -616,7 +527,6 @@ def generate_starter_pdf(cv, colours):
 
     c.save()
     buf.seek(0)
-
     return buf
 
 
@@ -671,32 +581,14 @@ def generate_executive_pdf(cv, colours):
 
         section_heading(c, sx, y, "SKILLS", ACCENT, SIDEBAR_W - 36)
         y -= 20
-
         skill_size = 6.8 if len(cv.get("skills", [])) > 14 else 7.2
-
-        y = draw_skills_list(
-            c,
-            cv.get("skills", []),
-            sx,
-            y,
-            SIDEBAR_W - 36,
-            "#D0D0D0",
-            skill_size,
-        )
+        y = draw_skills_list(c, cv.get("skills", []), sx, y, SIDEBAR_W - 36, "#D0D0D0", skill_size)
         y -= 10
 
         if y > 95:
             section_heading(c, sx, y, "EDUCATION", ACCENT, SIDEBAR_W - 36)
             y -= 20
-            draw_education(
-                c,
-                cv.get("education", []),
-                sx,
-                y,
-                SIDEBAR_W - 36,
-                "#FFFFFF",
-                "#A0A0A0",
-            )
+            draw_education(c, cv.get("education", []), sx, y, SIDEBAR_W - 36, "#FFFFFF", "#A0A0A0")
 
     sidebar(include_photo=True)
 
@@ -711,48 +603,26 @@ def generate_executive_pdf(cv, colours):
 
     section_heading(c, mx, y, "SUMMARY", NAVY, mw)
     y -= 16
-    y = draw_wrapped(
-        c,
-        cv.get("summary"),
-        mx,
-        y,
-        mw,
-        size=8.5,
-        leading=13,
-        colour=TEXT_MED,
-    ) - 16
+    y = draw_wrapped(c, cv.get("summary"), mx, y, mw, size=8.5, leading=13, colour=TEXT_MED) - 16
 
     section_heading(c, mx, y, "EXPERIENCE", NAVY, mw)
     y -= 18
-
     for job in cv.get("experience", []):
         if y < 90:
             c.showPage()
             sidebar(include_photo=False)
             y = H - 45
-
-        y = draw_role(
-            c,
-            job,
-            mx,
-            y,
-            mw,
-            ACCENT,
-            TEXT_DARK,
-            TEXT_MED,
-            TEXT_LIGHT,
-            company_gap=6,
-        )
+        y = draw_role(c, job, mx, y, mw, ACCENT, TEXT_DARK, TEXT_MED, TEXT_LIGHT, company_gap=6)
 
     c.save()
     buf.seek(0)
-
     return buf
 
 
 def generate_creative_pdf(cv, colours):
     cv = normalise_cv(cv)
     P1 = safe_hex(colours.get("primary_1", colours.get("primary")), "#6366F1")
+    P2 = safe_hex(colours.get("primary_2", colours.get("accent")), "#8B5CF6")
     TEXT_DARK = "#1A1A2E"
     TEXT_MED = "#4A4A5A"
     RIGHT_W = 185
@@ -766,7 +636,6 @@ def generate_creative_pdf(cv, colours):
     def draw_page1_shell():
         footer_brand(c, cv.get("is_premium", True))
         band_h = 90
-
         c.setFillColor(P1)
         c.rect(0, H - band_h, W, band_h, fill=1, stroke=0)
 
@@ -776,16 +645,11 @@ def generate_creative_pdf(cv, colours):
 
         c.setFont("Helvetica", 7.5)
         c.setFillColor(HexColor("#D0CDFF"))
-        c.drawString(
-            28,
-            H - 83,
-            clean_join([cv.get("email"), cv.get("phone"), cv.get("location")], " | "),
-        )
+        c.drawString(28, H - 83, clean_join([cv.get("email"), cv.get("phone"), cv.get("location")], " | "))
 
         panel_x = W - RIGHT_W
         c.setFillColor(PANEL_BG)
         c.rect(panel_x, 0, RIGHT_W, H - band_h, fill=1, stroke=0)
-
         return band_h, panel_x
 
     def draw_creative_sidebar(panel_x, band_h):
@@ -798,15 +662,7 @@ def generate_creative_pdf(cv, colours):
 
         section_heading(c, rx, ry, "SKILLS", P1, 35)
         ry -= 20
-        ry = draw_skill_pills(
-            c,
-            cv.get("skills", []),
-            rx,
-            ry,
-            RIGHT_W - 28,
-            HexColor("#EDE9FE"),
-            P1,
-        )
+        ry = draw_skill_pills(c, cv.get("skills", []), rx, ry, RIGHT_W - 28, HexColor("#EDE9FE"), P1)
 
         if ry > 85:
             section_heading(c, rx, ry, "EDUCATION", P1, 58)
@@ -821,16 +677,7 @@ def generate_creative_pdf(cv, colours):
 
     section_heading(c, lx, y, "SUMMARY", P1, 45)
     y -= 18
-    y = draw_wrapped(
-        c,
-        cv.get("summary"),
-        lx,
-        y,
-        LEFT_W,
-        size=8.5,
-        leading=13,
-        colour=TEXT_MED,
-    ) - 20
+    y = draw_wrapped(c, cv.get("summary"), lx, y, LEFT_W, size=8.5, leading=13, colour=TEXT_MED) - 20
 
     section_heading(c, lx, y, "EXPERIENCE", P1, 60)
     y -= 18
@@ -840,23 +687,10 @@ def generate_creative_pdf(cv, colours):
             c.showPage()
             footer_brand(c, cv.get("is_premium", True))
             y = H - 40
-
-        y = draw_role(
-            c,
-            job,
-            lx,
-            y,
-            LEFT_W,
-            P1,
-            TEXT_DARK,
-            TEXT_MED,
-            "#7A7A8A",
-            company_gap=6,
-        )
+        y = draw_role(c, job, lx, y, LEFT_W, P1, TEXT_DARK, TEXT_MED, "#7A7A8A", company_gap=6)
 
     c.save()
     buf.seek(0)
-
     return buf
 
 
@@ -890,11 +724,7 @@ def generate_impact_pdf(cv, colours):
 
         c.setFont("Helvetica", 7.5)
         c.setFillColor(HexColor("#9CA3AF"))
-        c.drawString(
-            28,
-            H - 85,
-            clean_join([cv.get("email"), cv.get("phone"), cv.get("location")], " | "),
-        )
+        c.drawString(28, H - 85, clean_join([cv.get("email"), cv.get("phone"), cv.get("location")], " | "))
 
         if photo_img:
             draw_circular_photo(c, photo_img, W - 65, H - header_h / 2, 31)
@@ -908,15 +738,7 @@ def generate_impact_pdf(cv, colours):
 
         section_heading(c, rx, ry, "SKILLS", TEAL, 35)
         ry -= 22
-        ry = draw_skill_pills(
-            c,
-            cv.get("skills", []),
-            rx,
-            ry,
-            RIGHT_W - 24,
-            HEADER_BG,
-            white,
-        )
+        ry = draw_skill_pills(c, cv.get("skills", []), rx, ry, RIGHT_W - 24, HEADER_BG, white)
 
         if ry > 85:
             section_heading(c, rx, ry, "EDUCATION", TEAL, 58)
@@ -927,19 +749,9 @@ def generate_impact_pdf(cv, colours):
     draw_impact_sidebar()
 
     y = body_top
-
     section_heading(c, left_x, y, "SUMMARY", TEAL, 45)
     y -= 18
-    y = draw_wrapped(
-        c,
-        cv.get("summary"),
-        left_x,
-        y,
-        left_w,
-        size=8.5,
-        leading=13,
-        colour=TEXT_MED,
-    ) - 20
+    y = draw_wrapped(c, cv.get("summary"), left_x, y, left_w, size=8.5, leading=13, colour=TEXT_MED) - 20
 
     section_heading(c, left_x, y, "EXPERIENCE", TEAL, 70)
     y -= 18
@@ -950,6 +762,7 @@ def generate_impact_pdf(cv, colours):
             footer_brand(c, cv.get("is_premium", True))
             y = H - 40
 
+        # company_gap is intentionally larger in Impact to prevent wrapped title/company collision.
         y = draw_role(
             c,
             job,
@@ -965,7 +778,6 @@ def generate_impact_pdf(cv, colours):
 
     c.save()
     buf.seek(0)
-
     return buf
 
 
@@ -980,9 +792,7 @@ def generate_docx(cv):
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     contact = doc.add_paragraph()
-    crun = contact.add_run(
-        clean_join([cv.get("email"), cv.get("phone"), cv.get("location")], " | ")
-    )
+    crun = contact.add_run(clean_join([cv.get("email"), cv.get("phone"), cv.get("location")], " | "))
     crun.font.size = Pt(9)
     contact.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
@@ -990,17 +800,14 @@ def generate_docx(cv):
     doc.add_paragraph(cv.get("summary", ""))
 
     doc.add_heading("EXPERIENCE", level=2)
-
     for job in cv.get("experience", []):
         jp = doc.add_paragraph()
         jr = jp.add_run(clean_join([job.get("title"), job.get("company")], " - "))
         jr.bold = True
-
         if job.get("dates"):
             dp = doc.add_paragraph(job.get("dates"))
             if dp.runs:
                 dp.runs[0].font.size = Pt(9)
-
         for bullet in job.get("bullets", []):
             doc.add_paragraph(clean_text(bullet), style="List Bullet")
 
@@ -1008,30 +815,58 @@ def generate_docx(cv):
     doc.add_paragraph(cv.get("skills_csv", ""))
 
     doc.add_heading("EDUCATION", level=2)
-
     for edu in cv.get("education", []):
         if edu.get("line"):
             doc.add_paragraph(edu.get("line"))
 
     if cv.get("certifications"):
         doc.add_heading("CERTIFICATIONS", level=2)
-
         for cert in cv.get("certifications", []):
             doc.add_paragraph(cert)
 
     buf = BytesIO()
     doc.save(buf)
     buf.seek(0)
-
     return buf
 
+
+
+
+def no_store_response(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    response.headers["X-RoleAlign-API-Version"] = API_VERSION
+    return response
+
+
+def extract_cv_payload(data):
+    raw_cv = data.get("cv_data")
+
+    if raw_cv is None:
+        raw_cv = data.get("cv")
+
+    if not isinstance(raw_cv, dict) or not raw_cv:
+        raise ValueError("Missing cv_data payload")
+
+    has_text_content = any(
+        clean_text(raw_cv.get(key))
+        for key in ["name", "full_name", "summary", "email", "phone", "location"]
+    )
+    has_structured_content = bool(raw_cv.get("experience")) or bool(raw_cv.get("skills")) or bool(raw_cv.get("education"))
+
+    if not has_text_content and not has_structured_content:
+        raise ValueError("Invalid cv_data payload")
+
+    return raw_cv
 
 @app.route("/generate-pdf", methods=["POST"])
 def gen_pdf():
     try:
-        data = request.get_json() or {}
-        cv = data.get("cv_data") or data.get("cv") or {}
+        data = request.get_json(silent=True) or {}
+        raw_cv = extract_cv_payload(data)
         template = (data.get("template") or data.get("template_id") or "executive").lower()
+        cv = raw_cv
         colours = data.get("colours") or data.get("colors") or {}
         render_version = data.get("render_version") or cv.get("render_version") or API_VERSION
         cv = normalise_cv({**cv, "render_version": render_version})
@@ -1063,14 +898,16 @@ def gen_pdf():
             return jsonify({"error": f"Invalid template: {template}"}), 400
 
         safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", cv.get("name") or "CV").strip("_") or "CV"
-
-        return send_file(
+        response = send_file(
             buf,
             mimetype="application/pdf",
             as_attachment=True,
             download_name=f"CV_{template}_{safe_name}.pdf",
         )
-
+        return no_store_response(response)
+    except ValueError as e:
+        print(f"[generate_pdf_validation_error] {e}")
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         print(f"[generate_pdf_error] {e}")
         return jsonify({"error": str(e)}), 500
@@ -1079,8 +916,9 @@ def gen_pdf():
 @app.route("/generate-docx", methods=["POST"])
 def gen_docx():
     try:
-        data = request.get_json() or {}
-        cv = normalise_cv(data.get("cv_data") or data.get("cv") or {})
+        data = request.get_json(silent=True) or {}
+        raw_cv = extract_cv_payload(data)
+        cv = normalise_cv(raw_cv)
 
         print(
             {
@@ -1095,14 +933,16 @@ def gen_docx():
 
         buf = generate_docx(cv)
         safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", cv.get("name") or "CV").strip("_") or "CV"
-
-        return send_file(
+        response = send_file(
             buf,
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             as_attachment=True,
             download_name=f"CV_{safe_name}.docx",
         )
-
+        return no_store_response(response)
+    except ValueError as e:
+        print(f"[generate_docx_validation_error] {e}")
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         print(f"[generate_docx_error] {e}")
         return jsonify({"error": str(e)}), 500
