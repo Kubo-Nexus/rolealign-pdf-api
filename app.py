@@ -20,7 +20,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.2.7"
+API_VERSION = "1.2.8"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -86,6 +86,51 @@ def clean_join(parts, sep=" - "):
     return sep.join(cleaned)
 
 
+def repair_skill_fragments(raw_skills):
+    """Repair known skill-fragment cases before rendering.
+
+    Some extraction/payload paths can split parenthetical acronym groups into
+    separate list items, e.g. ["SAP Super User (SD", "MM", "WH & FI)"].
+    Paid templates must render this as one customer-facing skill.
+    """
+    parts = []
+    for item in raw_skills or []:
+        if isinstance(item, dict):
+            item = item.get("name") or item.get("skill") or item.get("label")
+        txt = clean_text(item)
+        if txt:
+            parts.append(txt)
+
+    repaired = []
+    i = 0
+    while i < len(parts):
+        current = parts[i]
+        lower = current.lower()
+
+        if "sap super user" in lower and "(" in current and ")" not in current:
+            group = [current]
+            j = i + 1
+            while j < len(parts) and len(group) < 6:
+                group.append(parts[j])
+                if ")" in parts[j]:
+                    break
+                j += 1
+
+            combined = ", ".join(group)
+            combined = re.sub(r"\s*,\s*", ", ", combined)
+            combined = re.sub(r"\(\s*SD\s*,\s*MM\s*,\s*WH\s*,\s*FI\s*\)", "(SD, MM, WH & FI)", combined, flags=re.IGNORECASE)
+            combined = re.sub(r"\(\s*SD\s*,\s*MM\s*,\s*WH\s*&\s*FI\s*\)", "(SD, MM, WH & FI)", combined, flags=re.IGNORECASE)
+            combined = re.sub(r"\bSAP\s+Super\s+User\s*\(\s*SD\s*,\s*MM\s*,\s*WH\s*&\s*FI\s*\)", SAP_SUPER_USER, combined, flags=re.IGNORECASE)
+            repaired.append(clean_text(combined))
+            i = j + 1
+            continue
+
+        repaired.append(current)
+        i += 1
+
+    return repaired
+
+
 def split_skills(skills):
     if isinstance(skills, str):
         protected = re.sub(
@@ -97,7 +142,7 @@ def split_skills(skills):
         # Split common skill separators, but avoid breaking the SAP parenthetical commas.
         raw_parts = re.split(r"\n|•|·|;|,(?!\s*(?:MM|WH|FI)\b)", protected)
         return [p.replace(SAP_MARKER, SAP_SUPER_USER) for p in raw_parts]
-    return skills or []
+    return repair_skill_fragments(skills or [])
 
 
 def normalise_cv(cv):
@@ -186,6 +231,33 @@ def normalise_cv(cv):
             certifications.append(cert_text)
     clean_cv["certifications"] = certifications
 
+    achievements_raw = (
+        cv.get("achievements")
+        or cv.get("key_achievements")
+        or cv.get("career_achievements")
+        or cv.get("accomplishments")
+        or []
+    )
+    if isinstance(achievements_raw, str):
+        achievements_raw = re.split(r"\n|•|;", achievements_raw)
+    clean_cv["achievements"] = [clean_text(a.get("text") if isinstance(a, dict) else a) for a in achievements_raw if clean_text(a.get("text") if isinstance(a, dict) else a)]
+
+    systems_raw = (
+        cv.get("systems")
+        or cv.get("systems_experience")
+        or cv.get("technical_skills")
+        or cv.get("tools")
+        or []
+    )
+    if isinstance(systems_raw, str):
+        systems_raw = re.split(r"\n|•|;|,(?!\s*(?:MM|WH|FI)\b)", systems_raw)
+    clean_cv["systems_experience"] = repair_skill_fragments([clean_text(s.get("name") if isinstance(s, dict) else s) for s in systems_raw if clean_text(s.get("name") if isinstance(s, dict) else s)])
+
+    references_raw = cv.get("references") or cv.get("reference") or ""
+    if isinstance(references_raw, list):
+        references_raw = "; ".join([clean_text(r) for r in references_raw if clean_text(r)])
+    clean_cv["references"] = clean_text(references_raw)
+
     return clean_cv
 
 
@@ -245,8 +317,15 @@ def draw_rolealign_watermark(c):
 
 
 def footer_brand(c, is_premium):
-    if not is_premium:
-        draw_rolealign_watermark(c)
+    """Draw branding only on free/watermarked outputs.
+
+    Paid PDFs must look like normal customer CVs, so they get no footer
+    and no visible RoleAlign mark. Free Starter keeps both watermark and
+    small attribution footer.
+    """
+    if is_premium:
+        return
+    draw_rolealign_watermark(c)
     c.setFont("Helvetica", 6)
     c.setFillColor(HexColor("#999999"))
     c.drawCentredString(W / 2, 12, "Created with RoleAlign")
@@ -349,7 +428,7 @@ def draw_role(
     text_med="#4A4A4A",
     text_light="#777777",
     bullet=True,
-    company_gap=6,
+    company_gap=9,
 ):
     """
     Stable role header renderer.
@@ -392,7 +471,7 @@ def draw_role(
         c.setFont("Helvetica-Bold", 8)
         c.setFillColor(accent)
         c.drawString(x, y, company)
-        y -= 13
+        y -= 16
     else:
         y -= 3
 
@@ -512,6 +591,28 @@ def health():
     return jsonify({"ok": True, "service": "rolealign-pdf-api", "version": API_VERSION})
 
 
+def draw_list_section(c, label, items, x, y, width, accent, text_colour="#4A4A4A", bullet=True):
+    items = [clean_text(i) for i in (items or []) if clean_text(i)]
+    if not items:
+        return y
+    section_heading(c, x, y, label, accent, min(width, 150))
+    y -= 18
+    for item in items:
+        y = draw_manual_bullet(
+            c,
+            item,
+            x,
+            y,
+            width,
+            colour=text_colour,
+            size=8,
+            leading=11,
+            bullet=bullet,
+        )
+        y -= 3
+    return y - 10
+
+
 def generate_starter_pdf(cv, colours):
     cv = normalise_cv(cv)
     buf = BytesIO()
@@ -545,7 +646,7 @@ def generate_starter_pdf(cv, colours):
             c.showPage()
             footer_brand(c, cv.get("is_premium", False))
             y = H - 45
-        y = draw_role(c, job, x, y, width, accent, bullet=False, company_gap=6)
+        y = draw_role(c, job, x, y, width, accent, bullet=False, company_gap=9)
 
     if y < 110:
         c.showPage()
@@ -647,7 +748,31 @@ def generate_executive_pdf(cv, colours):
             c.showPage()
             sidebar(include_photo=False)
             y = H - 45
-        y = draw_role(c, job, mx, y, mw, ACCENT, TEXT_DARK, TEXT_MED, TEXT_LIGHT, company_gap=6)
+        y = draw_role(c, job, mx, y, mw, ACCENT, TEXT_DARK, TEXT_MED, TEXT_LIGHT, company_gap=9)
+
+    # Executive should be the most complete CV output. Render any optional
+    # evidence fields if Base44 sends them, without affecting lean payloads.
+    extra_sections = [
+        ("KEY ACHIEVEMENTS", cv.get("achievements", []), True),
+        ("PROFESSIONAL CERTIFICATIONS", cv.get("certifications", []), True),
+        ("SYSTEMS EXPERIENCE", cv.get("systems_experience", []), True),
+    ]
+    for label, items, use_bullets in extra_sections:
+        if items:
+            if y < 105:
+                c.showPage()
+                sidebar(include_photo=False)
+                y = H - 45
+            y = draw_list_section(c, label, items, mx, y, mw, NAVY, TEXT_MED, bullet=use_bullets)
+
+    if cv.get("references"):
+        if y < 70:
+            c.showPage()
+            sidebar(include_photo=False)
+            y = H - 45
+        section_heading(c, mx, y, "REFERENCES", NAVY, 75)
+        y -= 16
+        draw_wrapped(c, cv.get("references"), mx, y, mw, size=8, leading=11, colour=TEXT_MED)
 
     c.save()
     buf.seek(0)
@@ -722,7 +847,7 @@ def generate_creative_pdf(cv, colours):
             c.showPage()
             footer_brand(c, cv.get("is_premium", True))
             y = H - 40
-        y = draw_role(c, job, lx, y, LEFT_W, P1, TEXT_DARK, TEXT_MED, "#7A7A8A", company_gap=6)
+        y = draw_role(c, job, lx, y, LEFT_W, P1, TEXT_DARK, TEXT_MED, "#7A7A8A", company_gap=9)
 
     c.save()
     buf.seek(0)
@@ -808,7 +933,7 @@ def generate_impact_pdf(cv, colours):
             TEXT_DARK,
             TEXT_MED,
             "#9CA3AF",
-            company_gap=8,
+            company_gap=11,
         )
 
     c.save()
