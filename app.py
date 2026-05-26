@@ -9,12 +9,8 @@ from flask_cors import CORS
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.colors import HexColor, white
-from reportlab.lib.utils import ImageReader
+from reportlab.lib.utils import ImageReader, simpleSplit
 from reportlab.pdfgen import canvas
-from reportlab.platypus import Paragraph
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_LEFT
-
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -24,7 +20,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.2.6"
+API_VERSION = "1.2.7"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -265,6 +261,19 @@ def section_heading(c, x, y, label, colour, width=80):
     c.line(x, y - 4, x + width, y - 4)
 
 
+def wrap_lines(text, font_name, font_size, width):
+    """Wrap English text safely by words using ReportLab's width metrics.
+
+    This avoids ReportLab paragraph wrapping modes, which caused visible internal
+    spacing/splitting in generated PDFs. Only extremely long single tokens
+    are allowed to break as a last resort by simpleSplit.
+    """
+    text = clean_text(text)
+    if not text:
+        return []
+    return simpleSplit(text, font_name, font_size, width)
+
+
 def draw_wrapped(
     c,
     text,
@@ -280,19 +289,53 @@ def draw_wrapped(
     text = clean_text(text)
     if not text:
         return y
-    style = ParagraphStyle(
-        "wrap",
-        fontName="Helvetica-Bold" if bold else font,
-        fontSize=size,
-        leading=leading,
-        textColor=HexColor(colour),
-        alignment=TA_LEFT,
-        wordWrap="LTR",
-    )
-    p = Paragraph(text, style)
-    _, h = p.wrap(width, 500)
-    p.drawOn(c, x, y - h)
-    return y - h
+
+    font_name = "Helvetica-Bold" if bold else font
+    lines = wrap_lines(text, font_name, size, width)
+    c.setFont(font_name, size)
+    c.setFillColor(HexColor(colour))
+
+    baseline = y - size
+    for line in lines:
+        c.drawString(x, baseline, line)
+        baseline -= leading
+
+    return y - (leading * len(lines))
+
+
+def draw_manual_bullet(c, text, x, y, width, colour="#4A4A4A", size=8, leading=11, bullet=True):
+    text = clean_text(text)
+    if not text:
+        return y
+
+    c.setFont("Helvetica", size)
+    c.setFillColor(HexColor(colour))
+
+    if bullet:
+        bullet_x = x
+        text_x = x + 10
+        text_width = width - 15
+        lines = wrap_lines(text, "Helvetica", size, text_width)
+        if not lines:
+            return y
+
+        first_baseline = y - size
+        c.drawString(bullet_x, first_baseline, "•")
+        c.drawString(text_x, first_baseline, lines[0])
+
+        baseline = first_baseline - leading
+        for line in lines[1:]:
+            c.drawString(text_x, baseline, line)
+            baseline -= leading
+
+        return y - (leading * len(lines))
+
+    lines = wrap_lines(text, "Helvetica", size, width)
+    baseline = y - size
+    for line in lines:
+        c.drawString(x, baseline, line)
+        baseline -= leading
+    return y - (leading * len(lines))
 
 
 def draw_role(
@@ -353,49 +396,45 @@ def draw_role(
     else:
         y -= 3
 
-    bstyle = ParagraphStyle(
-        "bullet",
-        fontName="Helvetica",
-        fontSize=8,
-        leading=11,
-        textColor=HexColor(text_med),
-        leftIndent=10,
-        bulletIndent=0,
-        wordWrap="LTR",
-    )
-
     for item in job.get("bullets", []) or []:
-        txt = f"• {clean_text(item)}" if bullet else clean_text(item)
+        txt = clean_text(item)
         if not txt:
             continue
-        p = Paragraph(txt, bstyle)
-        _, h = p.wrap(width - 5, 500)
-        p.drawOn(c, x, y - h)
-        y -= h + 3
+        y = draw_manual_bullet(
+            c,
+            txt,
+            x,
+            y,
+            width - 5,
+            colour=text_med,
+            size=8,
+            leading=11,
+            bullet=bullet,
+        )
+        y -= 3
+
 
     return y - 8
 
 
 def draw_skills_list(c, skills, x, y, width, colour="#4A4A4A", size=7.5):
-    c.setFillColor(HexColor(colour))
     for skill in skills:
         text = clean_text(skill)
         if not text:
             continue
-        p = Paragraph(
+        y = draw_wrapped(
+            c,
             text,
-            ParagraphStyle(
-                "skill",
-                fontName="Helvetica",
-                fontSize=size,
-                leading=size + 2,
-                textColor=HexColor(colour),
-                wordWrap="LTR",
-            ),
+            x,
+            y,
+            width,
+            font="Helvetica",
+            size=size,
+            leading=size + 2,
+            colour=colour,
+            bold=False,
         )
-        _, h = p.wrap(width, 60)
-        p.drawOn(c, x, y - h)
-        y -= h + 5
+        y -= 5
     return y
 
 
@@ -413,21 +452,17 @@ def draw_skill_pills(c, skills, x, y, width, bg, fg, font_size=7):
             if tag_x != x:
                 tag_x = x
                 y -= row_gap
-            p = Paragraph(
-                skill,
-                ParagraphStyle(
-                    "pillwrap",
-                    fontName="Helvetica",
-                    fontSize=font_size,
-                    leading=font_size + 2,
-                    textColor=fg,
-                    wordWrap="LTR",
-                ),
-            )
-            _, h = p.wrap(width - 10, 80)
+            line_height = font_size + 2
+            lines = wrap_lines(skill, "Helvetica", font_size, width - 10)
+            h = max(line_height, line_height * len(lines))
             c.setFillColor(bg)
             c.roundRect(x, y - h - 4, width, h + 8, 6, fill=1, stroke=0)
-            p.drawOn(c, x + 5, y - h + 1)
+            c.setFillColor(fg)
+            c.setFont("Helvetica", font_size)
+            baseline = y - font_size + 1
+            for line in lines:
+                c.drawString(x + 5, baseline, line)
+                baseline -= line_height
             y -= h + 12
             tag_x = x
             continue
