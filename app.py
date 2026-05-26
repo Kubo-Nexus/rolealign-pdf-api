@@ -20,7 +20,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.2.11"
+API_VERSION = "1.2.12"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -758,17 +758,29 @@ def generate_executive_pdf(cv, colours):
             draw_education(c, cv.get("education", []), sx, y, SIDEBAR_W - 36, "#FFFFFF", "#A0A0A0")
 
     def executive_continuation_header(page_no):
-        """Minimal page 2+ header only. No repeated sidebar sections."""
+        """Page 2+ shell: keep the Executive visual rail, but do not repeat sections."""
         footer_brand(c, cv.get("is_premium", True))
+
+        # Keep the premium Executive visual identity consistent across pages,
+        # but do NOT repeat CONTACT / SKILLS / EDUCATION on continuation pages.
+        c.setFillColor(NAVY)
+        c.rect(0, 0, SIDEBAR_W, H, fill=1, stroke=0)
+        c.setFont("Helvetica-Bold", 9)
+        c.setFillColor(ACCENT)
+        c.drawString(18, H - 34, "CONTINUED")
+        c.setFont("Helvetica", 7)
+        c.setFillColor(HexColor("#D0D0D0"))
+        c.drawString(18, H - 50, f"Page {page_no}")
+
         c.setFont("Helvetica-Bold", 9)
         c.setFillColor(NAVY)
-        c.drawString(32, H - 24, cv.get("name") or "Professional CV")
+        c.drawString(SIDEBAR_W + 24, H - 24, cv.get("name") or "Professional CV")
         c.setFont("Helvetica", 7)
         c.setFillColor(HexColor(TEXT_LIGHT))
-        c.drawRightString(W - 32, H - 24, f"Page {page_no}")
+        c.drawRightString(W - 24, H - 24, f"Page {page_no}")
         c.setStrokeColor(ACCENT)
         c.setLineWidth(0.5)
-        c.line(32, H - 32, W - 32, H - 32)
+        c.line(SIDEBAR_W + 24, H - 32, W - 24, H - 32)
 
     executive_page1_sidebar()
 
@@ -795,8 +807,8 @@ def generate_executive_pdf(cv, colours):
             c.showPage()
             page_no += 1
             executive_continuation_header(page_no)
-            mx = 32
-            mw = W - 64
+            mx = SIDEBAR_W + 24
+            mw = W - mx - 24
             y = H - 48
         y = draw_role(c, job, mx, y, mw, ACCENT, TEXT_DARK, TEXT_MED, TEXT_LIGHT, company_gap=9)
 
@@ -823,8 +835,8 @@ def generate_executive_pdf(cv, colours):
             c.showPage()
             page_no += 1
             executive_continuation_header(page_no)
-            mx = 32
-            mw = W - 64
+            mx = SIDEBAR_W + 24
+            mw = W - mx - 24
             y = H - 48
         section_heading(c, mx, y, "REFERENCES", NAVY, 75)
         y -= 16
