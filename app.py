@@ -24,7 +24,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.2.5"
+API_VERSION = "1.2.6"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -287,7 +287,7 @@ def draw_wrapped(
         leading=leading,
         textColor=HexColor(colour),
         alignment=TA_LEFT,
-        wordWrap="CJK",
+        wordWrap="LTR",
     )
     p = Paragraph(text, style)
     _, h = p.wrap(width, 500)
@@ -361,7 +361,7 @@ def draw_role(
         textColor=HexColor(text_med),
         leftIndent=10,
         bulletIndent=0,
-        wordWrap="CJK",
+        wordWrap="LTR",
     )
 
     for item in job.get("bullets", []) or []:
@@ -390,7 +390,7 @@ def draw_skills_list(c, skills, x, y, width, colour="#4A4A4A", size=7.5):
                 fontSize=size,
                 leading=size + 2,
                 textColor=HexColor(colour),
-                wordWrap="CJK",
+                wordWrap="LTR",
             ),
         )
         _, h = p.wrap(width, 60)
@@ -421,7 +421,7 @@ def draw_skill_pills(c, skills, x, y, width, bg, fg, font_size=7):
                     fontSize=font_size,
                     leading=font_size + 2,
                     textColor=fg,
-                    wordWrap="CJK",
+                    wordWrap="LTR",
                 ),
             )
             _, h = p.wrap(width - 10, 80)
