@@ -20,7 +20,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.2.12"
+API_VERSION = "1.2.13"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -706,12 +706,7 @@ def generate_executive_pdf(cv, colours):
     photo_img = decode_photo(cv.get("photo"))
 
     def executive_page1_sidebar():
-        """Render the Executive sidebar on page 1 only.
-
-        Page 2+ must not repeat CONTACT / SKILLS / EDUCATION. Those sections
-        are useful on the first page, but repeating them on every page makes the
-        paid Executive CV look like a broken layout and wastes continuation space.
-        """
+        """Render Executive sidebar only on page 1."""
         c.setFillColor(NAVY)
         c.rect(0, 0, SIDEBAR_W, H, fill=1, stroke=0)
         footer_brand(c, cv.get("is_premium", True))
@@ -757,21 +752,11 @@ def generate_executive_pdf(cv, colours):
             y -= 20
             draw_education(c, cv.get("education", []), sx, y, SIDEBAR_W - 36, "#FFFFFF", "#A0A0A0")
 
-    def executive_continuation_header(page_no):
-        """Page 2+ shell: keep the Executive visual rail, but do not repeat sections."""
+    def executive_continuation_shell(page_no):
+        """Page 2+ keeps the Executive rail but no repeated sidebar sections."""
         footer_brand(c, cv.get("is_premium", True))
-
-        # Keep the premium Executive visual identity consistent across pages,
-        # but do NOT repeat CONTACT / SKILLS / EDUCATION on continuation pages.
         c.setFillColor(NAVY)
         c.rect(0, 0, SIDEBAR_W, H, fill=1, stroke=0)
-        c.setFont("Helvetica-Bold", 9)
-        c.setFillColor(ACCENT)
-        c.drawString(18, H - 34, "CONTINUED")
-        c.setFont("Helvetica", 7)
-        c.setFillColor(HexColor("#D0D0D0"))
-        c.drawString(18, H - 50, f"Page {page_no}")
-
         c.setFont("Helvetica-Bold", 9)
         c.setFillColor(NAVY)
         c.drawString(SIDEBAR_W + 24, H - 24, cv.get("name") or "Professional CV")
@@ -782,9 +767,19 @@ def generate_executive_pdf(cv, colours):
         c.setLineWidth(0.5)
         c.line(SIDEBAR_W + 24, H - 32, W - 24, H - 32)
 
+    def draw_compact_section(label, items, x, y, width):
+        items = [clean_text(i) for i in (items or []) if clean_text(i)]
+        if not items:
+            return y
+        section_heading(c, x, y, label, NAVY, min(width, 150))
+        y -= 14
+        for item in items:
+            y = draw_manual_bullet(c, item, x, y, width, colour=TEXT_MED, size=7.2, leading=8.8, bullet=True)
+            y -= 1.4
+        return y - 5
+
     executive_page1_sidebar()
 
-    # Page 1 uses the sidebar layout. Continuation pages switch to full-width.
     mx = SIDEBAR_W + 24
     mw = W - mx - 24
     y = H - 45
@@ -806,41 +801,40 @@ def generate_executive_pdf(cv, colours):
         if y < 90:
             c.showPage()
             page_no += 1
-            executive_continuation_header(page_no)
+            executive_continuation_shell(page_no)
             mx = SIDEBAR_W + 24
             mw = W - mx - 24
             y = H - 48
         y = draw_role(c, job, mx, y, mw, ACCENT, TEXT_DARK, TEXT_MED, TEXT_LIGHT, company_gap=9)
 
-    # Executive should be the most complete CV output. Render any optional
-    # evidence fields if Base44 sends them, without affecting lean payloads.
     extra_sections = [
-        ("KEY ACHIEVEMENTS", cv.get("achievements", []), True),
-        ("PROFESSIONAL CERTIFICATIONS", cv.get("certifications", []), True),
-        ("SYSTEMS EXPERIENCE", cv.get("systems_experience", []), True),
+        ("KEY ACHIEVEMENTS", cv.get("achievements", [])),
+        ("PROFESSIONAL CERTIFICATIONS", cv.get("certifications", [])),
+        ("SYSTEMS EXPERIENCE", cv.get("systems_experience", [])),
     ]
-    for label, items, use_bullets in extra_sections:
+    for label, items in extra_sections:
         if items:
-            if y < 105:
+            if y < 64:
                 c.showPage()
                 page_no += 1
-                executive_continuation_header(page_no)
-                mx = 32
-                mw = W - 64
+                executive_continuation_shell(page_no)
+                mx = SIDEBAR_W + 24
+                mw = W - mx - 24
                 y = H - 48
-            y = draw_list_section(c, label, items, mx, y, mw, NAVY, TEXT_MED, bullet=use_bullets)
+            y = draw_compact_section(label, items, mx, y, mw)
 
     if cv.get("references"):
-        if y < 70:
+        # Avoid a third page that only contains references when there is still safe room.
+        if y < 42:
             c.showPage()
             page_no += 1
-            executive_continuation_header(page_no)
+            executive_continuation_shell(page_no)
             mx = SIDEBAR_W + 24
             mw = W - mx - 24
             y = H - 48
         section_heading(c, mx, y, "REFERENCES", NAVY, 75)
-        y -= 16
-        draw_wrapped(c, cv.get("references"), mx, y, mw, size=8, leading=11, colour=TEXT_MED)
+        y -= 14
+        draw_wrapped(c, cv.get("references"), mx, y, mw, size=7.5, leading=9, colour=TEXT_MED)
 
     c.save()
     buf.seek(0)
@@ -896,11 +890,28 @@ def generate_creative_pdf(cv, colours):
             ry -= 20
             draw_education(c, cv.get("education", []), rx, ry, RIGHT_W - 28, TEXT_DARK)
 
+    def draw_continuation_shell(page_no):
+        footer_brand(c, cv.get("is_premium", True))
+        band_h = 58
+        c.setFillColor(P1)
+        c.rect(0, H - band_h, W, band_h, fill=1, stroke=0)
+        c.setFont("Helvetica-Bold", 13)
+        c.setFillColor(white)
+        c.drawString(28, H - 35, cv.get("name") or "Professional CV")
+        c.setFont("Helvetica", 7)
+        c.setFillColor(HexColor("#D0CDFF"))
+        c.drawRightString(W - 24, H - 35, f"Page {page_no}")
+        panel_x = W - RIGHT_W
+        c.setFillColor(PANEL_BG)
+        c.rect(panel_x, 0, RIGHT_W, H - band_h, fill=1, stroke=0)
+        return band_h, panel_x
+
     band_h, panel_x = draw_page1_shell()
     draw_creative_sidebar(panel_x, band_h)
 
     lx = 28
     y = H - band_h - 28
+    page_no = 1
 
     section_heading(c, lx, y, "SUMMARY", P1, 45)
     y -= 18
@@ -912,8 +923,9 @@ def generate_creative_pdf(cv, colours):
     for job in cv.get("experience", []):
         if y < 90:
             c.showPage()
-            footer_brand(c, cv.get("is_premium", True))
-            y = H - 40
+            page_no += 1
+            band_h, panel_x = draw_continuation_shell(page_no)
+            y = H - band_h - 28
         y = draw_role(c, job, lx, y, LEFT_W, P1, TEXT_DARK, TEXT_MED, "#7A7A8A", company_gap=9)
 
     c.save()
@@ -972,10 +984,26 @@ def generate_impact_pdf(cv, colours):
             ry -= 22
             draw_education(c, cv.get("education", []), rx, ry, RIGHT_W - 24, TEXT_DARK)
 
+    def draw_continuation_shell(page_no):
+        footer_brand(c, cv.get("is_premium", True))
+        band_h = 58
+        c.setFillColor(HEADER_BG)
+        c.rect(0, H - band_h, W, band_h, fill=1, stroke=0)
+        c.setFont("Helvetica-Bold", 13)
+        c.setFillColor(white)
+        c.drawString(28, H - 35, cv.get("name") or "Professional CV")
+        c.setFont("Helvetica", 7)
+        c.setFillColor(HexColor("#9CA3AF"))
+        c.drawRightString(W - 24, H - 35, f"Page {page_no}")
+        c.setFillColor(HexColor("#F9FAFB"))
+        c.rect(right_x - 10, 0, RIGHT_W + 14, H - band_h, fill=1, stroke=0)
+        return band_h
+
     draw_page1_shell()
     draw_impact_sidebar()
 
     y = body_top
+    page_no = 1
     section_heading(c, left_x, y, "SUMMARY", TEAL, 45)
     y -= 18
     y = draw_wrapped(c, cv.get("summary"), left_x, y, left_w, size=8.5, leading=13, colour=TEXT_MED) - 20
@@ -986,10 +1014,9 @@ def generate_impact_pdf(cv, colours):
     for job in cv.get("experience", []):
         if y < 90:
             c.showPage()
-            footer_brand(c, cv.get("is_premium", True))
-            y = H - 40
-
-        # company_gap is intentionally larger in Impact to prevent wrapped title/company collision.
+            page_no += 1
+            band_h = draw_continuation_shell(page_no)
+            y = H - band_h - 28
         y = draw_role(
             c,
             job,
