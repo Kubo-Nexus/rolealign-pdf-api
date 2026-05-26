@@ -20,7 +20,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.2.13"
+API_VERSION = "1.2.14"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -768,15 +768,23 @@ def generate_executive_pdf(cv, colours):
         c.line(SIDEBAR_W + 24, H - 32, W - 24, H - 32)
 
     def draw_compact_section(label, items, x, y, width):
+        """Compact Executive section with safe breathing room between headings.
+
+        v1.2.13 kept everything on two pages, but the ultra-tight spacing made
+        section headings visually collide with the preceding bullets. Keep the
+        two-page behaviour, but reduce item leading slightly and add controlled
+        top/bottom section padding so headings never touch bullets.
+        """
         items = [clean_text(i) for i in (items or []) if clean_text(i)]
         if not items:
             return y
+        y -= 6
         section_heading(c, x, y, label, NAVY, min(width, 150))
-        y -= 14
+        y -= 15
         for item in items:
-            y = draw_manual_bullet(c, item, x, y, width, colour=TEXT_MED, size=7.2, leading=8.8, bullet=True)
-            y -= 1.4
-        return y - 5
+            y = draw_manual_bullet(c, item, x, y, width, colour=TEXT_MED, size=7.0, leading=8.0, bullet=True)
+            y -= 0.8
+        return y - 8
 
     executive_page1_sidebar()
 
