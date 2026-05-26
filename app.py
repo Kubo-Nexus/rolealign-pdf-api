@@ -20,7 +20,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.2.10"
+API_VERSION = "1.2.11"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -129,6 +129,34 @@ def repair_skill_fragments(raw_skills):
         i += 1
 
     return repaired
+
+
+def normalise_references(value):
+    """Clean references defensively.
+
+    Base44 can sometimes send references as a list of single characters after
+    sanitisation, which produced output like "A; v; a; i...". Render must
+    never show that. Keep normal strings/lists, but collapse character lists
+    and canonicalise common reference phrases.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        vals = [clean_text(v) for v in value if clean_text(v)]
+        if vals and sum(1 for v in vals if len(v) <= 2) >= max(4, int(len(vals) * 0.6)):
+            text = "".join(vals)
+        else:
+            text = "; ".join(vals)
+    else:
+        text = clean_text(value)
+    text = re.sub(r"\s*;\s*([A-Za-z])\s*;\s*", r"\1", text)
+    text = re.sub(r"\bA\s*v\s*a\s*i\s*l\s*a\s*b\s*l\s*e\b", "Available", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bu\s*p\s*o\s*n\b", "upon", text, flags=re.IGNORECASE)
+    text = re.sub(r"\br\s*e\s*q\s*u\s*e\s*s\s*t\b", "request", text, flags=re.IGNORECASE)
+    text = clean_text(text)
+    if re.search(r"available\s+(upon|on)\s+request", text, re.IGNORECASE):
+        return "Available upon request."
+    return text
 
 
 def split_skills(skills):
@@ -254,9 +282,7 @@ def normalise_cv(cv):
     clean_cv["systems_experience"] = repair_skill_fragments([clean_text(s.get("name") if isinstance(s, dict) else s) for s in systems_raw if clean_text(s.get("name") if isinstance(s, dict) else s)])
 
     references_raw = cv.get("references") or cv.get("reference") or ""
-    if isinstance(references_raw, list):
-        references_raw = "; ".join([clean_text(r) for r in references_raw if clean_text(r)])
-    clean_cv["references"] = clean_text(references_raw)
+    clean_cv["references"] = normalise_references(references_raw)
 
     return clean_cv
 
@@ -667,15 +693,8 @@ def generate_starter_pdf(cv, colours):
 
 
 def generate_executive_pdf(cv, colours):
-    """Executive template: clean senior CV layout.
-
-    Important behaviour:
-    - No repeated sidebar on continuation pages.
-    - Contact details render under the candidate name at the top of page 1.
-    - Skills and education render once only.
-    - Continuation pages use a small name/page header and full-width content.
-    """
     cv = normalise_cv(cv)
+    SIDEBAR_W = 190
     NAVY = safe_hex(colours.get("primary"), "#1B2A4A")
     ACCENT = safe_hex(colours.get("accent"), "#C9A96E")
     TEXT_DARK = "#1A1A1A"
@@ -684,101 +703,132 @@ def generate_executive_pdf(cv, colours):
 
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
+    photo_img = decode_photo(cv.get("photo"))
 
-    margin_x = 42
-    width = W - (margin_x * 2)
-    page_no = 1
+    def executive_page1_sidebar():
+        """Render the Executive sidebar on page 1 only.
 
-    def draw_page_footer():
+        Page 2+ must not repeat CONTACT / SKILLS / EDUCATION. Those sections
+        are useful on the first page, but repeating them on every page makes the
+        paid Executive CV look like a broken layout and wastes continuation space.
+        """
+        c.setFillColor(NAVY)
+        c.rect(0, 0, SIDEBAR_W, H, fill=1, stroke=0)
         footer_brand(c, cv.get("is_premium", True))
 
-    def new_page():
-        nonlocal page_no
-        c.showPage()
-        page_no += 1
-        draw_page_footer()
+        sx = 18
+        cx, cy = SIDEBAR_W / 2, H - 70
+
+        if photo_img:
+            c.setFillColor(white)
+            c.circle(cx, cy, 38, fill=1, stroke=0)
+            draw_circular_photo(c, photo_img, cx, cy, 36)
+        else:
+            c.setFillColor(HexColor("#2A3F6A"))
+            c.circle(cx, cy, 36, fill=1, stroke=0)
+            c.setFillColor(white)
+            c.setFont("Helvetica-Bold", 18)
+            initials = "".join([w[0] for w in (cv.get("name") or "CV").split()[:2]]).upper()
+            c.drawCentredString(cx, cy - 6, initials)
+
+        y = H - 130
+
+        section_heading(c, sx, y, "CONTACT", ACCENT, SIDEBAR_W - 36)
+        y -= 20
+        y = draw_skills_list(
+            c,
+            [cv.get("email"), cv.get("phone"), cv.get("location"), cv.get("linkedin")],
+            sx,
+            y,
+            SIDEBAR_W - 36,
+            "#D0D0D0",
+            7.3,
+        )
+        y -= 10
+
+        section_heading(c, sx, y, "SKILLS", ACCENT, SIDEBAR_W - 36)
+        y -= 20
+        skill_size = 6.8 if len(cv.get("skills", [])) > 14 else 7.2
+        y = draw_skills_list(c, cv.get("skills", []), sx, y, SIDEBAR_W - 36, "#D0D0D0", skill_size)
+        y -= 10
+
+        if y > 95:
+            section_heading(c, sx, y, "EDUCATION", ACCENT, SIDEBAR_W - 36)
+            y -= 20
+            draw_education(c, cv.get("education", []), sx, y, SIDEBAR_W - 36, "#FFFFFF", "#A0A0A0")
+
+    def executive_continuation_header(page_no):
+        """Minimal page 2+ header only. No repeated sidebar sections."""
+        footer_brand(c, cv.get("is_premium", True))
         c.setFont("Helvetica-Bold", 9)
         c.setFillColor(NAVY)
-        c.drawRightString(W - margin_x, H - 24, f"{cv.get('name') or 'Professional CV'} Page {page_no}")
-        return H - 48
+        c.drawString(32, H - 24, cv.get("name") or "Professional CV")
+        c.setFont("Helvetica", 7)
+        c.setFillColor(HexColor(TEXT_LIGHT))
+        c.drawRightString(W - 32, H - 24, f"Page {page_no}")
+        c.setStrokeColor(ACCENT)
+        c.setLineWidth(0.5)
+        c.line(32, H - 32, W - 32, H - 32)
 
-    def ensure_space(y, needed=80):
-        if y < needed:
-            return new_page()
-        return y
+    executive_page1_sidebar()
 
-    draw_page_footer()
-    y = H - 48
+    # Page 1 uses the sidebar layout. Continuation pages switch to full-width.
+    mx = SIDEBAR_W + 24
+    mw = W - mx - 24
+    y = H - 45
+    page_no = 1
 
-    # Top identity header
-    c.setFont("Helvetica-Bold", 26)
+    c.setFont("Helvetica-Bold", 24)
     c.setFillColor(NAVY)
-    c.drawString(margin_x, y, cv.get("name") or "Professional CV")
+    c.drawString(mx, y, cv.get("name") or "Professional CV")
+    y -= 26
+
+    section_heading(c, mx, y, "SUMMARY", NAVY, mw)
+    y -= 16
+    y = draw_wrapped(c, cv.get("summary"), mx, y, mw, size=8.5, leading=13, colour=TEXT_MED) - 16
+
+    section_heading(c, mx, y, "EXPERIENCE", NAVY, mw)
     y -= 18
 
-    contact_line = clean_join([cv.get("email"), cv.get("phone"), cv.get("location"), cv.get("linkedin")], " | ")
-    if contact_line:
-        c.setFont("Helvetica", 8)
-        c.setFillColor(HexColor(TEXT_LIGHT))
-        c.drawString(margin_x, y, contact_line)
-        y -= 26
-    else:
-        y -= 16
+    for job in cv.get("experience", []):
+        if y < 90:
+            c.showPage()
+            page_no += 1
+            executive_continuation_header(page_no)
+            mx = 32
+            mw = W - 64
+            y = H - 48
+        y = draw_role(c, job, mx, y, mw, ACCENT, TEXT_DARK, TEXT_MED, TEXT_LIGHT, company_gap=9)
 
-    # Summary
-    if cv.get("summary"):
-        section_heading(c, margin_x, y, "SUMMARY", NAVY, 70)
-        y -= 16
-        y = draw_wrapped(c, cv.get("summary"), margin_x, y, width, size=8.7, leading=12.5, colour=TEXT_MED) - 14
-
-    # Skills once only, compact and professional.
-    if cv.get("skills"):
-        y = ensure_space(y, 110)
-        section_heading(c, margin_x, y, "SKILLS", NAVY, 45)
-        y -= 16
-        y = draw_wrapped(c, cv.get("skills_csv"), margin_x, y, width, size=8, leading=11, colour=TEXT_MED) - 14
-
-    # Education once only.
-    if cv.get("education"):
-        y = ensure_space(y, 90)
-        section_heading(c, margin_x, y, "EDUCATION", NAVY, 70)
-        y -= 16
-        y = draw_education(c, cv.get("education", []), margin_x, y, width, TEXT_DARK, TEXT_LIGHT) - 8
-
-    # Experience.
-    if cv.get("experience"):
-        y = ensure_space(y, 90)
-        section_heading(c, margin_x, y, "EXPERIENCE", NAVY, 80)
-        y -= 18
-        for job in cv.get("experience", []):
-            # Estimate enough space for the role header plus at least two bullets.
-            y = ensure_space(y, 115)
-            y = draw_role(c, job, margin_x, y, width, ACCENT, TEXT_DARK, TEXT_MED, TEXT_LIGHT, company_gap=9)
-
-    # Executive senior sections.
+    # Executive should be the most complete CV output. Render any optional
+    # evidence fields if Base44 sends them, without affecting lean payloads.
     extra_sections = [
         ("KEY ACHIEVEMENTS", cv.get("achievements", []), True),
         ("PROFESSIONAL CERTIFICATIONS", cv.get("certifications", []), True),
         ("SYSTEMS EXPERIENCE", cv.get("systems_experience", []), True),
     ]
     for label, items, use_bullets in extra_sections:
-        items = [clean_text(i) for i in (items or []) if clean_text(i)]
-        if not items:
-            continue
-        y = ensure_space(y, 105)
-        section_heading(c, margin_x, y, label, NAVY, min(width, 180))
-        y -= 18
-        for item in items:
-            y = ensure_space(y, 65)
-            y = draw_manual_bullet(c, item, margin_x, y, width, colour=TEXT_MED, size=8, leading=11, bullet=use_bullets)
-            y -= 3
-        y -= 10
+        if items:
+            if y < 105:
+                c.showPage()
+                page_no += 1
+                executive_continuation_header(page_no)
+                mx = 32
+                mw = W - 64
+                y = H - 48
+            y = draw_list_section(c, label, items, mx, y, mw, NAVY, TEXT_MED, bullet=use_bullets)
 
     if cv.get("references"):
-        y = ensure_space(y, 70)
-        section_heading(c, margin_x, y, "REFERENCES", NAVY, 75)
+        if y < 70:
+            c.showPage()
+            page_no += 1
+            executive_continuation_header(page_no)
+            mx = 32
+            mw = W - 64
+            y = H - 48
+        section_heading(c, mx, y, "REFERENCES", NAVY, 75)
         y -= 16
-        y = draw_wrapped(c, cv.get("references"), margin_x, y, width, size=8, leading=11, colour=TEXT_MED)
+        draw_wrapped(c, cv.get("references"), mx, y, mw, size=8, leading=11, colour=TEXT_MED)
 
     c.save()
     buf.seek(0)
