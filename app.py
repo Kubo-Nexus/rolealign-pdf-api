@@ -2,6 +2,7 @@ import os
 import re
 import base64
 import urllib.request
+from difflib import SequenceMatcher
 from io import BytesIO
 
 from flask import Flask, request, send_file, jsonify
@@ -131,6 +132,86 @@ def repair_skill_fragments(raw_skills):
     return repaired
 
 
+def _normalise_for_compare(text):
+    """Aggressive normalisation used only for duplicate detection."""
+    if not text:
+        return ""
+    t = str(text).lower().strip()
+    t = re.sub(r"[^\w\s%]", " ", t)
+    t = re.sub(r"\s+", " ", t)
+    # Common paraphrase equivalences
+    t = t.replace("r220 million", "r220m").replace("r140 million", "r140m")
+    t = t.replace("r8 million", "r8m")
+    t = re.sub(r"\b(the|a|an|of|in|to|for|on|at|by|with|from|across|through|including|approximately|annually|while|that|which|and)\b", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+_STOPLIKE_TOKENS = {"all", "office", "company", "consistently", "year", "years", "first", "second", "one", "two", "performance", "successfully", "improvements", "improvement", "within", "online", "as", "saving", "savings", "generating", "manager", "marketing", "commercial", "revenue", "while", "during", "over", "monthly", "won", "awarded", "received", "achieved"}
+
+
+def _significant_tokens(norm_text):
+    return {tok for tok in norm_text.split() if tok and tok not in _STOPLIKE_TOKENS and not tok.isdigit()}
+
+
+def dedup_items(items, similarity_threshold=0.78):
+    """De-duplicate a list of strings using multi-strategy matching.
+
+    Conservative thresholds: catches obvious paraphrases (same numeric values
+    + same key tokens) but preserves distinct items that share only generic
+    framing words (e.g. "Renault Aftersales World Conference" vs "DHL World
+    Conference" — both panel-member events but at different organisations).
+    """
+    if not items:
+        return []
+
+    cleaned = []
+    for raw in items:
+        text = clean_text(raw) if not isinstance(raw, str) else raw.strip()
+        if text:
+            cleaned.append(text)
+
+    if not cleaned:
+        return []
+
+    kept = []
+    for item in cleaned:
+        norm = _normalise_for_compare(item)
+        if not norm:
+            continue
+        tokens = _significant_tokens(norm)
+
+        is_duplicate = False
+        for idx, (existing_text, existing_norm, existing_tokens) in enumerate(kept):
+            duplicate_match = False
+
+            if norm == existing_norm:
+                duplicate_match = True
+            elif norm in existing_norm or existing_norm in norm:
+                duplicate_match = True
+            elif tokens and existing_tokens:
+                smaller, larger = (tokens, existing_tokens) if len(tokens) <= len(existing_tokens) else (existing_tokens, tokens)
+                if len(smaller) >= 3:
+                    overlap = len(smaller & larger) / len(smaller)
+                    if overlap >= 0.80:
+                        duplicate_match = True
+                if not duplicate_match:
+                    ratio = SequenceMatcher(None, norm, existing_norm).ratio()
+                    if ratio >= similarity_threshold:
+                        duplicate_match = True
+
+            if duplicate_match:
+                is_duplicate = True
+                if len(item) > len(existing_text):
+                    kept[idx] = (item, norm, tokens)
+                break
+
+        if not is_duplicate:
+            kept.append((item, norm, tokens))
+
+    return [text for text, _, _ in kept]
+
+
 def normalise_references(value):
     """Clean references defensively.
 
@@ -257,7 +338,7 @@ def normalise_cv(cv):
         cert_text = clean_text(cert.get("name") if isinstance(cert, dict) else cert)
         if cert_text and cert_text not in ["Professional Certifications", "Professional Certification"]:
             certifications.append(cert_text)
-    clean_cv["certifications"] = certifications
+    clean_cv["certifications"] = dedup_items(certifications)
 
     achievements_raw = (
         cv.get("achievements")
@@ -268,7 +349,15 @@ def normalise_cv(cv):
     )
     if isinstance(achievements_raw, str):
         achievements_raw = re.split(r"\n|•|;", achievements_raw)
-    clean_cv["achievements"] = [clean_text(a.get("text") if isinstance(a, dict) else a) for a in achievements_raw if clean_text(a.get("text") if isinstance(a, dict) else a)]
+    raw_achievements_list = [clean_text(a.get("text") if isinstance(a, dict) else a) for a in achievements_raw if clean_text(a.get("text") if isinstance(a, dict) else a)]
+    # Also merge any per-role key_achievements from the experience array
+    for exp_entry in cv.get("experience", []) or []:
+        if isinstance(exp_entry, dict):
+            for role_ach in (exp_entry.get("key_achievements") or exp_entry.get("achievements") or []):
+                ach_text = clean_text(role_ach.get("text") if isinstance(role_ach, dict) else role_ach)
+                if ach_text:
+                    raw_achievements_list.append(ach_text)
+    clean_cv["achievements"] = dedup_items(raw_achievements_list)
 
     systems_raw = (
         cv.get("systems")
@@ -279,7 +368,7 @@ def normalise_cv(cv):
     )
     if isinstance(systems_raw, str):
         systems_raw = re.split(r"\n|•|;|,(?!\s*(?:MM|WH|FI)\b)", systems_raw)
-    clean_cv["systems_experience"] = repair_skill_fragments([clean_text(s.get("name") if isinstance(s, dict) else s) for s in systems_raw if clean_text(s.get("name") if isinstance(s, dict) else s)])
+    clean_cv["systems_experience"] = dedup_items(repair_skill_fragments([clean_text(s.get("name") if isinstance(s, dict) else s) for s in systems_raw if clean_text(s.get("name") if isinstance(s, dict) else s)]))
 
     references_raw = cv.get("references") or cv.get("reference") or ""
     clean_cv["references"] = normalise_references(references_raw)
@@ -685,7 +774,38 @@ def generate_starter_pdf(cv, colours):
 
     section_heading(c, x, y, "EDUCATION", accent, 70)
     y -= 16
-    draw_education(c, cv.get("education", []), x, y, width)
+    y = draw_education(c, cv.get("education", []), x, y, width)
+
+    def starter_extra(label, items):
+        nonlocal y
+        items = [clean_text(i) for i in (items or []) if clean_text(i)]
+        if not items:
+            return
+        if y < 90:
+            c.showPage()
+            footer_brand(c, cv.get("is_premium", False))
+            y = H - 45
+        y -= 14
+        section_heading(c, x, y, label, accent, min(width, 150))
+        y -= 16
+        for item in items:
+            y = draw_manual_bullet(c, item, x, y, width, colour="#374151", size=8, leading=10, bullet=True)
+            y -= 1
+        y -= 6
+
+    starter_extra("KEY ACHIEVEMENTS", cv.get("achievements", []))
+    starter_extra("PROFESSIONAL CERTIFICATIONS", cv.get("certifications", []))
+    starter_extra("SYSTEMS EXPERIENCE", cv.get("systems_experience", []))
+
+    if cv.get("references"):
+        if y < 60:
+            c.showPage()
+            footer_brand(c, cv.get("is_premium", False))
+            y = H - 45
+        y -= 14
+        section_heading(c, x, y, "REFERENCES", accent, 70)
+        y -= 16
+        draw_wrapped(c, cv.get("references"), x, y, width, size=8, leading=11, colour="#374151")
 
     c.save()
     buf.seek(0)
@@ -768,23 +888,17 @@ def generate_executive_pdf(cv, colours):
         c.line(SIDEBAR_W + 24, H - 32, W - 24, H - 32)
 
     def draw_compact_section(label, items, x, y, width):
-        """Compact Executive section with safe breathing room between headings.
-
-        v1.2.13 kept everything on two pages, but the ultra-tight spacing made
-        section headings visually collide with the preceding bullets. Keep the
-        two-page behaviour, but reduce item leading slightly and add controlled
-        top/bottom section padding so headings never touch bullets.
-        """
+        """Compact Executive section with safe breathing room between headings."""
         items = [clean_text(i) for i in (items or []) if clean_text(i)]
         if not items:
             return y
-        y -= 6
+        y -= 14
         section_heading(c, x, y, label, NAVY, min(width, 150))
-        y -= 15
+        y -= 16
         for item in items:
             y = draw_manual_bullet(c, item, x, y, width, colour=TEXT_MED, size=7.0, leading=8.0, bullet=True)
             y -= 0.8
-        return y - 8
+        return y - 6
 
     executive_page1_sidebar()
 
@@ -833,6 +947,7 @@ def generate_executive_pdf(cv, colours):
 
     if cv.get("references"):
         # Avoid a third page that only contains references when there is still safe room.
+        y -= 14  # breathing room above REFERENCES heading
         if y < 42:
             c.showPage()
             page_no += 1
@@ -841,7 +956,7 @@ def generate_executive_pdf(cv, colours):
             mw = W - mx - 24
             y = H - 48
         section_heading(c, mx, y, "REFERENCES", NAVY, 75)
-        y -= 14
+        y -= 16
         draw_wrapped(c, cv.get("references"), mx, y, mw, size=7.5, leading=9, colour=TEXT_MED)
 
     c.save()
@@ -935,6 +1050,40 @@ def generate_creative_pdf(cv, colours):
             band_h, panel_x = draw_continuation_shell(page_no)
             y = H - band_h - 28
         y = draw_role(c, job, lx, y, LEFT_W, P1, TEXT_DARK, TEXT_MED, "#7A7A8A", company_gap=9)
+
+    # Extra senior-CV sections (render only if present)
+    extra_sections = [
+        ("KEY ACHIEVEMENTS", cv.get("achievements", [])),
+        ("PROFESSIONAL CERTIFICATIONS", cv.get("certifications", [])),
+        ("SYSTEMS EXPERIENCE", cv.get("systems_experience", [])),
+    ]
+    for label, items in extra_sections:
+        items = [clean_text(i) for i in (items or []) if clean_text(i)]
+        if not items:
+            continue
+        if y < 90:
+            c.showPage()
+            page_no += 1
+            band_h, panel_x = draw_continuation_shell(page_no)
+            y = H - band_h - 28
+        y -= 14
+        section_heading(c, lx, y, label, P1, min(LEFT_W, 150))
+        y -= 16
+        for item in items:
+            y = draw_manual_bullet(c, item, lx, y, LEFT_W, colour=TEXT_MED, size=7.5, leading=9, bullet=True)
+            y -= 0.8
+        y -= 6
+
+    if cv.get("references"):
+        y -= 14
+        if y < 60:
+            c.showPage()
+            page_no += 1
+            band_h, panel_x = draw_continuation_shell(page_no)
+            y = H - band_h - 28
+        section_heading(c, lx, y, "REFERENCES", P1, 75)
+        y -= 16
+        draw_wrapped(c, cv.get("references"), lx, y, LEFT_W, size=8, leading=10, colour=TEXT_MED)
 
     c.save()
     buf.seek(0)
@@ -1038,6 +1187,40 @@ def generate_impact_pdf(cv, colours):
             company_gap=11,
         )
 
+    # Extra senior-CV sections (render only if present)
+    extra_sections = [
+        ("KEY ACHIEVEMENTS", cv.get("achievements", [])),
+        ("PROFESSIONAL CERTIFICATIONS", cv.get("certifications", [])),
+        ("SYSTEMS EXPERIENCE", cv.get("systems_experience", [])),
+    ]
+    for label, items in extra_sections:
+        items = [clean_text(i) for i in (items or []) if clean_text(i)]
+        if not items:
+            continue
+        if y < 90:
+            c.showPage()
+            page_no += 1
+            band_h = draw_continuation_shell(page_no)
+            y = H - band_h - 28
+        y -= 14
+        section_heading(c, left_x + 18, y, label, TEAL, min(left_w - 18, 170))
+        y -= 16
+        for item in items:
+            y = draw_manual_bullet(c, item, left_x + 18, y, left_w - 18, colour=TEXT_MED, size=7.5, leading=9, bullet=True)
+            y -= 0.8
+        y -= 6
+
+    if cv.get("references"):
+        y -= 14
+        if y < 60:
+            c.showPage()
+            page_no += 1
+            band_h = draw_continuation_shell(page_no)
+            y = H - band_h - 28
+        section_heading(c, left_x + 18, y, "REFERENCES", TEAL, 75)
+        y -= 16
+        draw_wrapped(c, cv.get("references"), left_x + 18, y, left_w - 18, size=8, leading=10, colour=TEXT_MED)
+
     c.save()
     buf.seek(0)
     return buf
@@ -1085,6 +1268,20 @@ def generate_docx(cv):
         doc.add_heading("CERTIFICATIONS", level=2)
         for cert in cv.get("certifications", []):
             doc.add_paragraph(cert)
+
+    if cv.get("achievements"):
+        doc.add_heading("KEY ACHIEVEMENTS", level=2)
+        for ach in cv.get("achievements", []):
+            doc.add_paragraph(clean_text(ach), style="List Bullet")
+
+    if cv.get("systems_experience"):
+        doc.add_heading("SYSTEMS EXPERIENCE", level=2)
+        for sys_item in cv.get("systems_experience", []):
+            doc.add_paragraph(clean_text(sys_item), style="List Bullet")
+
+    if cv.get("references"):
+        doc.add_heading("REFERENCES", level=2)
+        doc.add_paragraph(clean_text(cv.get("references")))
 
     buf = BytesIO()
     doc.save(buf)
