@@ -235,9 +235,13 @@ def normalise_references(value):
     text = re.sub(r"\bu\s*p\s*o\s*n\b", "upon", text, flags=re.IGNORECASE)
     text = re.sub(r"\br\s*e\s*q\s*u\s*e\s*s\s*t\b", "request", text, flags=re.IGNORECASE)
     text = clean_text(text)
-    if re.search(r"available\s+(upon|on)\s+request", text, re.IGNORECASE):
-        return "Available upon request."
-    return text
+    if not text:
+        return ""
+    # Privacy / POPIA: never echo referee names, phone numbers, or email
+    # addresses into a rendered CV. Any non-empty references value is collapsed
+    # to a single neutral line. Enforced here so every template and the DOCX
+    # inherit the behaviour from one place.
+    return "Available upon request."
 
 
 def split_skills(skills):
@@ -633,46 +637,30 @@ def draw_skills_list(c, skills, x, y, width, colour="#4A4A4A", size=7.5):
 
 
 def draw_skill_pills(c, skills, x, y, width, bg, fg, font_size=7):
-    tag_x = x
-    row_gap = 22
+    # One skill per row. Previously short adjacent skills were packed onto the
+    # same row, which made pairs such as "Health & Safety Compliance" and
+    # "Incoterms" read as a single merged entry. Rendering one full-width pill
+    # per line guarantees every skill is visually distinct.
+    line_height = font_size + 3
 
     for skill in skills:
         skill = clean_text(skill)
         if not skill:
             continue
 
-        tw = c.stringWidth(skill, "Helvetica", font_size) + 14
-        if tw > width:
-            if tag_x != x:
-                tag_x = x
-                y -= row_gap
-            line_height = font_size + 2
-            lines = wrap_lines(skill, "Helvetica", font_size, width - 10)
-            h = max(line_height, line_height * len(lines))
-            c.setFillColor(bg)
-            c.roundRect(x, y - h - 4, width, h + 8, 6, fill=1, stroke=0)
-            c.setFillColor(fg)
-            c.setFont("Helvetica", font_size)
-            baseline = y - font_size + 1
-            for line in lines:
-                c.drawString(x + 5, baseline, line)
-                baseline -= line_height
-            y -= h + 12
-            tag_x = x
-            continue
-
-        if tag_x + tw > x + width:
-            tag_x = x
-            y -= row_gap
-
+        lines = wrap_lines(skill, "Helvetica", font_size, width - 14)
+        h = 16 + line_height * (len(lines) - 1)
         c.setFillColor(bg)
-        c.roundRect(tag_x, y - 4, tw, 16, 8, fill=1, stroke=0)
+        c.roundRect(x, y - 4, width, h, 8, fill=1, stroke=0)
         c.setFillColor(fg)
         c.setFont("Helvetica", font_size)
-        c.drawString(tag_x + 7, y + 2, skill)
-        tag_x += tw + 6
+        baseline = y + 2 + line_height * (len(lines) - 1)
+        for line in lines:
+            c.drawString(x + 7, baseline, line)
+            baseline -= line_height
+        y -= h + 6
 
-    return y - 25
+    return y - 10
 
 
 def draw_education(c, education, x, y, width, title_colour="#1A1A1A", sub_colour="#777777"):
@@ -798,14 +786,11 @@ def generate_starter_pdf(cv, colours):
     starter_extra("SYSTEMS EXPERIENCE", cv.get("systems_experience", []))
 
     if cv.get("references"):
-        if y < 60:
-            c.showPage()
-            footer_brand(c, cv.get("is_premium", False))
-            y = H - 45
         y -= 14
-        section_heading(c, x, y, "REFERENCES", accent, 70)
-        y -= 16
-        draw_wrapped(c, cv.get("references"), x, y, width, size=8, leading=11, colour="#374151")
+        if y >= 60:
+            section_heading(c, x, y, "REFERENCES", accent, 70)
+            y -= 16
+            draw_wrapped(c, cv.get("references"), x, y, width, size=8, leading=11, colour="#374151")
 
     c.save()
     buf.seek(0)
@@ -946,18 +931,14 @@ def generate_executive_pdf(cv, colours):
             y = draw_compact_section(label, items, mx, y, mw)
 
     if cv.get("references"):
-        # Avoid a third page that only contains references when there is still safe room.
+        # References are a single neutral line. Never spawn a near-empty extra
+        # page just to show it — if it does not fit, omit it so the CV ends
+        # cleanly on the current page.
         y -= 14  # breathing room above REFERENCES heading
-        if y < 42:
-            c.showPage()
-            page_no += 1
-            executive_continuation_shell(page_no)
-            mx = SIDEBAR_W + 24
-            mw = W - mx - 24
-            y = H - 48
-        section_heading(c, mx, y, "REFERENCES", NAVY, 75)
-        y -= 16
-        draw_wrapped(c, cv.get("references"), mx, y, mw, size=7.5, leading=9, colour=TEXT_MED)
+        if y >= 42:
+            section_heading(c, mx, y, "REFERENCES", NAVY, 75)
+            y -= 16
+            draw_wrapped(c, cv.get("references"), mx, y, mw, size=7.5, leading=9, colour=TEXT_MED)
 
     c.save()
     buf.seek(0)
@@ -1076,14 +1057,10 @@ def generate_creative_pdf(cv, colours):
 
     if cv.get("references"):
         y -= 14
-        if y < 60:
-            c.showPage()
-            page_no += 1
-            band_h, panel_x = draw_continuation_shell(page_no)
-            y = H - band_h - 28
-        section_heading(c, lx, y, "REFERENCES", P1, 75)
-        y -= 16
-        draw_wrapped(c, cv.get("references"), lx, y, LEFT_W, size=8, leading=10, colour=TEXT_MED)
+        if y >= 60:
+            section_heading(c, lx, y, "REFERENCES", P1, 75)
+            y -= 16
+            draw_wrapped(c, cv.get("references"), lx, y, LEFT_W, size=8, leading=10, colour=TEXT_MED)
 
     c.save()
     buf.seek(0)
@@ -1212,14 +1189,10 @@ def generate_impact_pdf(cv, colours):
 
     if cv.get("references"):
         y -= 14
-        if y < 60:
-            c.showPage()
-            page_no += 1
-            band_h = draw_continuation_shell(page_no)
-            y = H - band_h - 28
-        section_heading(c, left_x + 18, y, "REFERENCES", TEAL, 75)
-        y -= 16
-        draw_wrapped(c, cv.get("references"), left_x + 18, y, left_w - 18, size=8, leading=10, colour=TEXT_MED)
+        if y >= 60:
+            section_heading(c, left_x + 18, y, "REFERENCES", TEAL, 75)
+            y -= 16
+            draw_wrapped(c, cv.get("references"), left_x + 18, y, left_w - 18, size=8, leading=10, colour=TEXT_MED)
 
     c.save()
     buf.seek(0)
