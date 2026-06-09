@@ -873,14 +873,30 @@ def generate_executive_pdf(cv, colours):
         c.line(SIDEBAR_W + 24, H - 32, W - 24, H - 32)
 
     def draw_compact_section(label, items, x, y, width):
-        """Compact Executive section with safe breathing room between headings."""
+        """Compact Executive section that paginates mid-list rather than
+        clipping. A long section flows onto a new page instead of running off
+        the bottom. A short trailing page is acceptable; losing content is not.
+        """
+        nonlocal page_no
         items = [clean_text(i) for i in (items or []) if clean_text(i)]
         if not items:
             return y
+        BOTTOM = 70  # never draw a bullet below this y; leave room for wrapping
+        # Need room for the heading plus at least the first item.
+        if y < BOTTOM + 34:
+            c.showPage()
+            page_no += 1
+            executive_continuation_shell(page_no)
+            y = H - 48
         y -= 14
         section_heading(c, x, y, label, NAVY, min(width, 150))
         y -= 16
         for item in items:
+            if y < BOTTOM:
+                c.showPage()
+                page_no += 1
+                executive_continuation_shell(page_no)
+                y = H - 48
             y = draw_manual_bullet(c, item, x, y, width, colour=TEXT_MED, size=7.0, leading=8.0, bullet=True)
             y -= 0.8
         return y - 6
@@ -921,13 +937,6 @@ def generate_executive_pdf(cv, colours):
     ]
     for label, items in extra_sections:
         if items:
-            if y < 64:
-                c.showPage()
-                page_no += 1
-                executive_continuation_shell(page_no)
-                mx = SIDEBAR_W + 24
-                mw = W - mx - 24
-                y = H - 48
             y = draw_compact_section(label, items, mx, y, mw)
 
     if cv.get("references"):
