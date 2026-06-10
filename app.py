@@ -21,7 +21,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.2.14"
+API_VERSION = "1.3.1-pills-pagination"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -548,6 +548,8 @@ def draw_role(
     text_light="#777777",
     bullet=True,
     company_gap=9,
+    new_page=None,
+    bullet_bottom=70,
 ):
     """
     Stable role header renderer.
@@ -555,10 +557,20 @@ def draw_role(
     The company baseline is calculated from the actual wrapped title paragraph height,
     not a fixed one-line offset. This prevents wrapped titles from colliding
     with company names.
+
+    If a `new_page` callback is supplied, the role paginates instead of
+    clipping: it breaks before drawing the header if the title would be
+    orphaned at the bottom of the page, and before any bullet that would
+    otherwise run off the page. `new_page` must start a fresh page (drawing
+    the template's continuation shell) and return the new starting y.
     """
     title = clean_text(job.get("title"))
     company = clean_text(job.get("company"))
     dates = clean_text(job.get("dates"))
+
+    # Avoid orphaning a role header at the very bottom of a page.
+    if new_page is not None and y < 118:
+        y = new_page()
 
     title_w = width - 92 if dates else width
     title_top_y = y
@@ -598,6 +610,8 @@ def draw_role(
         txt = clean_text(item)
         if not txt:
             continue
+        if new_page is not None and y < bullet_bottom:
+            y = new_page()
         y = draw_manual_bullet(
             c,
             txt,
@@ -637,11 +651,12 @@ def draw_skills_list(c, skills, x, y, width, colour="#4A4A4A", size=7.5):
 
 
 def draw_skill_pills(c, skills, x, y, width, bg, fg, font_size=7):
-    # One skill per row. Previously short adjacent skills were packed onto the
-    # same row, which made pairs such as "Health & Safety Compliance" and
-    # "Incoterms" read as a single merged entry. Rendering one full-width pill
-    # per line guarantees every skill is visually distinct.
+    # One pill per skill, anchored from the TOP and grown downward, with a
+    # fixed gap between pills. This guarantees a multi-line pill (e.g. a long
+    # skill that wraps) can never overlap and merge into the pill above it.
     line_height = font_size + 3
+    v_pad = 5
+    gap = 6
 
     for skill in skills:
         skill = clean_text(skill)
@@ -649,18 +664,21 @@ def draw_skill_pills(c, skills, x, y, width, bg, fg, font_size=7):
             continue
 
         lines = wrap_lines(skill, "Helvetica", font_size, width - 14)
-        h = 16 + line_height * (len(lines) - 1)
+        if not lines:
+            continue
+        pill_h = len(lines) * line_height + 2 * v_pad
+        top = y
         c.setFillColor(bg)
-        c.roundRect(x, y - 4, width, h, 8, fill=1, stroke=0)
+        c.roundRect(x, top - pill_h, width, pill_h, 8, fill=1, stroke=0)
         c.setFillColor(fg)
         c.setFont("Helvetica", font_size)
-        baseline = y + 2 + line_height * (len(lines) - 1)
+        baseline = top - v_pad - font_size + 1
         for line in lines:
             c.drawString(x + 7, baseline, line)
             baseline -= line_height
-        y -= h + 6
+        y = top - pill_h - gap
 
-    return y - 10
+    return y - 6
 
 
 def draw_education(c, education, x, y, width, title_colour="#1A1A1A", sub_colour="#777777"):
@@ -744,12 +762,12 @@ def generate_starter_pdf(cv, colours):
 
     section_heading(c, x, y, "EXPERIENCE", accent, 80)
     y -= 18
+    def _exp_newpage():
+        c.showPage()
+        footer_brand(c, cv.get("is_premium", False))
+        return H - 45
     for job in cv.get("experience", []):
-        if y < 90:
-            c.showPage()
-            footer_brand(c, cv.get("is_premium", False))
-            y = H - 45
-        y = draw_role(c, job, x, y, width, accent, bullet=False, company_gap=9)
+        y = draw_role(c, job, x, y, width, accent, bullet=False, company_gap=9, new_page=_exp_newpage)
 
     if y < 110:
         c.showPage()
@@ -920,15 +938,16 @@ def generate_executive_pdf(cv, colours):
     section_heading(c, mx, y, "EXPERIENCE", NAVY, mw)
     y -= 18
 
+    def _exp_newpage():
+        nonlocal page_no, mx, mw
+        c.showPage()
+        page_no += 1
+        executive_continuation_shell(page_no)
+        mx = SIDEBAR_W + 24
+        mw = W - mx - 24
+        return H - 48
     for job in cv.get("experience", []):
-        if y < 90:
-            c.showPage()
-            page_no += 1
-            executive_continuation_shell(page_no)
-            mx = SIDEBAR_W + 24
-            mw = W - mx - 24
-            y = H - 48
-        y = draw_role(c, job, mx, y, mw, ACCENT, TEXT_DARK, TEXT_MED, TEXT_LIGHT, company_gap=9)
+        y = draw_role(c, job, mx, y, mw, ACCENT, TEXT_DARK, TEXT_MED, TEXT_LIGHT, company_gap=9, new_page=_exp_newpage)
 
     extra_sections = [
         ("KEY ACHIEVEMENTS", cv.get("achievements", [])),
@@ -998,10 +1017,12 @@ def generate_creative_pdf(cv, colours):
         ry -= 20
         ry = draw_skill_pills(c, cv.get("skills", []), rx, ry, RIGHT_W - 28, HexColor("#EDE9FE"), P1)
 
-        if ry > 85:
+        if cv.get("education") and ry > 110:
             section_heading(c, rx, ry, "EDUCATION", P1, 58)
             ry -= 20
             draw_education(c, cv.get("education", []), rx, ry, RIGHT_W - 28, TEXT_DARK)
+            return True
+        return False
 
     def draw_continuation_shell(page_no):
         footer_brand(c, cv.get("is_premium", True))
@@ -1020,7 +1041,7 @@ def generate_creative_pdf(cv, colours):
         return band_h, panel_x
 
     band_h, panel_x = draw_page1_shell()
-    draw_creative_sidebar(panel_x, band_h)
+    edu_in_sidebar = draw_creative_sidebar(panel_x, band_h)
 
     lx = 28
     y = H - band_h - 28
@@ -1033,16 +1054,22 @@ def generate_creative_pdf(cv, colours):
     section_heading(c, lx, y, "EXPERIENCE", P1, 60)
     y -= 18
 
+    def _exp_newpage():
+        nonlocal page_no
+        c.showPage()
+        page_no += 1
+        bh, _px = draw_continuation_shell(page_no)
+        return H - bh - 28
     for job in cv.get("experience", []):
-        if y < 90:
-            c.showPage()
-            page_no += 1
-            band_h, panel_x = draw_continuation_shell(page_no)
-            y = H - band_h - 28
-        y = draw_role(c, job, lx, y, LEFT_W, P1, TEXT_DARK, TEXT_MED, "#7A7A8A", company_gap=9)
+        y = draw_role(c, job, lx, y, LEFT_W, P1, TEXT_DARK, TEXT_MED, "#7A7A8A", company_gap=9, new_page=_exp_newpage)
 
     # Extra senior-CV sections (render only if present)
-    extra_sections = [
+    extra_sections = []
+    if not edu_in_sidebar and cv.get("education"):
+        edu_lines = [e.get("line") for e in cv.get("education", []) if e.get("line")]
+        if edu_lines:
+            extra_sections.append(("EDUCATION", edu_lines))
+    extra_sections += [
         ("KEY ACHIEVEMENTS", cv.get("achievements", [])),
         ("PROFESSIONAL CERTIFICATIONS", cv.get("certifications", [])),
         ("SYSTEMS EXPERIENCE", cv.get("systems_experience", [])),
@@ -1051,7 +1078,7 @@ def generate_creative_pdf(cv, colours):
         items = [clean_text(i) for i in (items or []) if clean_text(i)]
         if not items:
             continue
-        if y < 90:
+        if y < 104:
             c.showPage()
             page_no += 1
             band_h, panel_x = draw_continuation_shell(page_no)
@@ -1060,6 +1087,11 @@ def generate_creative_pdf(cv, colours):
         section_heading(c, lx, y, label, P1, min(LEFT_W, 150))
         y -= 16
         for item in items:
+            if y < 70:
+                c.showPage()
+                page_no += 1
+                band_h, panel_x = draw_continuation_shell(page_no)
+                y = H - band_h - 28
             y = draw_manual_bullet(c, item, lx, y, LEFT_W, colour=TEXT_MED, size=7.5, leading=9, bullet=True)
             y -= 0.8
         y -= 6
@@ -1122,10 +1154,14 @@ def generate_impact_pdf(cv, colours):
         ry -= 22
         ry = draw_skill_pills(c, cv.get("skills", []), rx, ry, RIGHT_W - 24, HEADER_BG, white)
 
-        if ry > 85:
+        # Only render education in the sidebar if there is genuine room for it.
+        # Otherwise the caller renders it in the main column so it is never lost.
+        if cv.get("education") and ry > 110:
             section_heading(c, rx, ry, "EDUCATION", TEAL, 58)
             ry -= 22
             draw_education(c, cv.get("education", []), rx, ry, RIGHT_W - 24, TEXT_DARK)
+            return True
+        return False
 
     def draw_continuation_shell(page_no):
         footer_brand(c, cv.get("is_premium", True))
@@ -1143,7 +1179,7 @@ def generate_impact_pdf(cv, colours):
         return band_h
 
     draw_page1_shell()
-    draw_impact_sidebar()
+    edu_in_sidebar = draw_impact_sidebar()
 
     y = body_top
     page_no = 1
@@ -1154,12 +1190,13 @@ def generate_impact_pdf(cv, colours):
     section_heading(c, left_x, y, "EXPERIENCE", TEAL, 70)
     y -= 18
 
+    def _exp_newpage():
+        nonlocal page_no
+        c.showPage()
+        page_no += 1
+        bh = draw_continuation_shell(page_no)
+        return H - bh - 28
     for job in cv.get("experience", []):
-        if y < 90:
-            c.showPage()
-            page_no += 1
-            band_h = draw_continuation_shell(page_no)
-            y = H - band_h - 28
         y = draw_role(
             c,
             job,
@@ -1171,10 +1208,16 @@ def generate_impact_pdf(cv, colours):
             TEXT_MED,
             "#9CA3AF",
             company_gap=11,
+            new_page=_exp_newpage,
         )
 
     # Extra senior-CV sections (render only if present)
-    extra_sections = [
+    extra_sections = []
+    if not edu_in_sidebar and cv.get("education"):
+        edu_lines = [e.get("line") for e in cv.get("education", []) if e.get("line")]
+        if edu_lines:
+            extra_sections.append(("EDUCATION", edu_lines))
+    extra_sections += [
         ("KEY ACHIEVEMENTS", cv.get("achievements", [])),
         ("PROFESSIONAL CERTIFICATIONS", cv.get("certifications", [])),
         ("SYSTEMS EXPERIENCE", cv.get("systems_experience", [])),
@@ -1183,7 +1226,7 @@ def generate_impact_pdf(cv, colours):
         items = [clean_text(i) for i in (items or []) if clean_text(i)]
         if not items:
             continue
-        if y < 90:
+        if y < 104:
             c.showPage()
             page_no += 1
             band_h = draw_continuation_shell(page_no)
@@ -1192,6 +1235,11 @@ def generate_impact_pdf(cv, colours):
         section_heading(c, left_x + 18, y, label, TEAL, min(left_w - 18, 170))
         y -= 16
         for item in items:
+            if y < 70:
+                c.showPage()
+                page_no += 1
+                band_h = draw_continuation_shell(page_no)
+                y = H - band_h - 28
             y = draw_manual_bullet(c, item, left_x + 18, y, left_w - 18, colour=TEXT_MED, size=7.5, leading=9, bullet=True)
             y -= 0.8
         y -= 6
