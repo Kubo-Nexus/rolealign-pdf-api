@@ -21,7 +21,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.4.0-impact-sidebar-paginate"
+API_VERSION = "1.4.1-edu-dedupe-cert-strip"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -328,6 +328,16 @@ def normalise_cv(cv):
             year = clean_text(edu.get("year") or edu.get("dates") or edu.get("date"))
 
         line = clean_join([degree, institution], " - ")
+        # Defensive dedupe: AI-generated payloads occasionally embed the institution
+        # inside the degree field (e.g. "Coursiv AI — AI Mastery Certificate Program"
+        # with institution also "Coursiv AI"), which renders as a duplicated name.
+        # If the institution token is already inside the degree, build the line
+        # from the degree alone so the name only appears once.
+        if degree and institution:
+            inst_lower = institution.lower()
+            degree_lower = degree.lower()
+            if inst_lower in degree_lower:
+                line = degree
         if year:
             line = f"{line} ({year})" if line else year
 
@@ -337,11 +347,29 @@ def normalise_cv(cv):
             education.append({"degree": degree, "institution": institution, "year": year, "line": degree})
     clean_cv["education"] = education
 
+    # Boilerplate-filler bullets the model sometimes appends to short lists.
+    # These are not user content and violate the no-fabrication contract, so
+    # we strip them defensively even though prompts try to suppress them.
+    CERT_BOILERPLATE_TOKENS = (
+        "additional qualifications",
+        "additional certifications",
+        "available on request",
+        "available upon request",
+        "further details available",
+        "references available",
+    )
+
     certifications = []
     for cert in cv.get("certifications", []) or []:
         cert_text = clean_text(cert.get("name") if isinstance(cert, dict) else cert)
-        if cert_text and cert_text not in ["Professional Certifications", "Professional Certification"]:
-            certifications.append(cert_text)
+        if not cert_text:
+            continue
+        if cert_text in ["Professional Certifications", "Professional Certification"]:
+            continue
+        cert_lower = cert_text.lower()
+        if any(tok in cert_lower for tok in CERT_BOILERPLATE_TOKENS):
+            continue
+        certifications.append(cert_text)
     clean_cv["certifications"] = dedup_items(certifications)
 
     achievements_raw = (
