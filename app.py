@@ -21,7 +21,7 @@ app = Flask(__name__)
 CORS(app)
 
 W, H = A4
-API_VERSION = "1.3.1-pills-pagination"
+API_VERSION = "1.4.0-impact-sidebar-paginate"
 
 ACRONYMS = {
     "sap": "SAP",
@@ -650,23 +650,35 @@ def draw_skills_list(c, skills, x, y, width, colour="#4A4A4A", size=7.5):
     return y
 
 
-def draw_skill_pills(c, skills, x, y, width, bg, fg, font_size=7):
+def draw_skill_pills(c, skills, x, y, width, bg, fg, font_size=7, min_y=None):
     # One pill per skill, anchored from the TOP and grown downward, with a
     # fixed gap between pills. This guarantees a multi-line pill (e.g. a long
     # skill that wraps) can never overlap and merge into the pill above it.
+    #
+    # When min_y is supplied, the column is height-aware: it stops before any
+    # pill would cross the floor and returns the skills it could not fit, so the
+    # caller can continue them in the next page's sidebar instead of letting
+    # them run off the bottom of the page. Returns (end_y, remaining_skills).
     line_height = font_size + 3
     v_pad = 5
     gap = 6
 
-    for skill in skills:
-        skill = clean_text(skill)
-        if not skill:
-            continue
+    skills = [s for s in (skills or []) if clean_text(s)]
+    remaining = []
+    for idx, skill in enumerate(skills):
+        skill_clean = clean_text(skill)
 
-        lines = wrap_lines(skill, "Helvetica", font_size, width - 14)
+        lines = wrap_lines(skill_clean, "Helvetica", font_size, width - 14)
         if not lines:
             continue
         pill_h = len(lines) * line_height + 2 * v_pad
+
+        # Stop before drawing a pill that would cross the bottom floor; hand the
+        # rest back so the caller can continue them on the next page's sidebar.
+        if min_y is not None and (y - pill_h) < min_y:
+            remaining = skills[idx:]
+            break
+
         top = y
         c.setFillColor(bg)
         c.roundRect(x, top - pill_h, width, pill_h, 8, fill=1, stroke=0)
@@ -678,7 +690,7 @@ def draw_skill_pills(c, skills, x, y, width, bg, fg, font_size=7):
             baseline -= line_height
         y = top - pill_h - gap
 
-    return y - 6
+    return y - 6, remaining
 
 
 def draw_education(c, education, x, y, width, title_colour="#1A1A1A", sub_colour="#777777"):
@@ -1015,7 +1027,7 @@ def generate_creative_pdf(cv, colours):
 
         section_heading(c, rx, ry, "SKILLS", P1, 35)
         ry -= 20
-        ry = draw_skill_pills(c, cv.get("skills", []), rx, ry, RIGHT_W - 28, HexColor("#EDE9FE"), P1)
+        ry, _ = draw_skill_pills(c, cv.get("skills", []), rx, ry, RIGHT_W - 28, HexColor("#EDE9FE"), P1)
 
         if cv.get("education") and ry > 110:
             section_heading(c, rx, ry, "EDUCATION", P1, 58)
@@ -1125,6 +1137,8 @@ def generate_impact_pdf(cv, colours):
     left_x = 28
     left_w = W - RIGHT_W - 52
     body_top = H - header_h - 22
+    SIDEBAR_FLOOR = 40
+    pending_skills = []
 
     def draw_page1_shell():
         footer_brand(c, cv.get("is_premium", True))
@@ -1152,11 +1166,15 @@ def generate_impact_pdf(cv, colours):
 
         section_heading(c, rx, ry, "SKILLS", TEAL, 35)
         ry -= 22
-        ry = draw_skill_pills(c, cv.get("skills", []), rx, ry, RIGHT_W - 24, HEADER_BG, white)
+        ry, remaining = draw_skill_pills(
+            c, cv.get("skills", []), rx, ry, RIGHT_W - 24, HEADER_BG, white, min_y=SIDEBAR_FLOOR
+        )
+        pending_skills[:] = remaining
 
-        # Only render education in the sidebar if there is genuine room for it.
-        # Otherwise the caller renders it in the main column so it is never lost.
-        if cv.get("education") and ry > 110:
+        # Only render education in the sidebar if every skill fit AND there is
+        # genuine room. Otherwise education goes in the main column (never lost)
+        # and the overflow skills continue in the page-2 sidebar.
+        if not pending_skills and cv.get("education") and ry > 110:
             section_heading(c, rx, ry, "EDUCATION", TEAL, 58)
             ry -= 22
             draw_education(c, cv.get("education", []), rx, ry, RIGHT_W - 24, TEXT_DARK)
@@ -1176,6 +1194,17 @@ def generate_impact_pdf(cv, colours):
         c.drawRightString(W - 24, H - 35, f"Page {page_no}")
         c.setFillColor(HexColor("#F9FAFB"))
         c.rect(right_x - 10, 0, RIGHT_W + 14, H - band_h, fill=1, stroke=0)
+
+        # Continue any skills that didn't fit on the previous page's sidebar so
+        # the page-2+ sidebar is used instead of overflowing off page 1.
+        if pending_skills:
+            rx = right_x + 6
+            ry = H - band_h - 18
+            _, remaining = draw_skill_pills(
+                c, pending_skills, rx, ry, RIGHT_W - 24, HEADER_BG, white, min_y=SIDEBAR_FLOOR
+            )
+            pending_skills[:] = remaining
+
         return band_h
 
     draw_page1_shell()
@@ -1250,6 +1279,14 @@ def generate_impact_pdf(cv, colours):
             section_heading(c, left_x + 18, y, "REFERENCES", TEAL, 75)
             y -= 16
             draw_wrapped(c, cv.get("references"), left_x + 18, y, left_w - 18, size=8, leading=10, colour=TEXT_MED)
+
+    # Flush any sidebar skills still pending onto fresh continuation pages.
+    # Covers the rare case of a very long skills list paired with short
+    # experience that never triggered an experience-driven page break.
+    while pending_skills:
+        c.showPage()
+        page_no += 1
+        draw_continuation_shell(page_no)
 
     c.save()
     buf.seek(0)
